@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Logs
+*.log
+
+# Node / frontend
+node_modules/
+frontend/node_modules/
+frontend_backup/node_modules/
+stockfish-chess-web-gui/node_modules/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# UV lock (optional — keeping it for reproducibility, but list here if you want to exclude)
+# uv.lock
+
+# Misc
+*.sqlite
+*.db
