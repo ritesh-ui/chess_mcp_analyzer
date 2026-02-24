@@ -23,6 +23,18 @@ document.addEventListener("DOMContentLoaded", function () {
         else moveSound.play().catch(e => { });
     }
 
+    // Toggle Ambient
+    document.getElementById('toggleAmbientBtn').addEventListener('click', function (e) {
+        e.stopPropagation(); // Don't trigger accordion
+        if (ambientHall.paused) {
+            ambientHall.play().catch(e => { });
+            this.textContent = '🔊';
+        } else {
+            ambientHall.pause();
+            this.textContent = '🔇';
+        }
+    });
+
     // --- Coach WebSocket (server -> GUI push) ---
     function connectCoachSocket() {
         coachSocket = new WebSocket(WS_URL);
