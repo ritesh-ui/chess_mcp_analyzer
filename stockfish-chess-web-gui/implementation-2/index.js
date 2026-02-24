@@ -7,6 +7,8 @@ document.addEventListener("DOMContentLoaded", function () {
     const MCP_SERVER = 'http://localhost:8000';
     const WS_URL = 'ws://localhost:8000/ws';
     let coachSocket = null;
+    let currentChallenge = null; // Track active Socratic challenge
+
 
     // --- Coach WebSocket (server -> GUI push) ---
     function connectCoachSocket() {
@@ -22,6 +24,23 @@ document.addEventListener("DOMContentLoaded", function () {
                     const panel = document.getElementById('coach-messages');
                     const time = new Date().toLocaleTimeString();
                     panel.innerHTML = `<p style="margin:0">${data.message}</p><small class="text-muted">Updated: ${time}</small>`;
+
+                    // 1. Clear previous highlights
+                    removeHighlights();
+
+                    // 2. Apply New Heatmap Highlights
+                    if (data.hot_squares) {
+                        data.hot_squares.forEach(hs => {
+                            const squareEl = document.querySelector(`.square-${hs.square}`);
+                            if (squareEl) {
+                                squareEl.classList.add(hs.type === 'gold' ? 'glow-gold' : 'glow-red');
+                            }
+                        });
+                    }
+
+                    // 3. Set Active Challenge
+                    currentChallenge = data.challenge;
+
                     // Auto-expand the AI Coach accordion
                     const coachCollapse = document.getElementById('collapseCoach');
                     if (coachCollapse && !coachCollapse.classList.contains('show')) {
@@ -35,6 +54,12 @@ document.addEventListener("DOMContentLoaded", function () {
             document.getElementById('coach-status').style.color = '#6c757d';
             setTimeout(connectCoachSocket, 3000);
         };
+    }
+
+    function removeHighlights() {
+        document.querySelectorAll('.glow-gold, .glow-red').forEach(el => {
+            el.classList.remove('glow-gold', 'glow-red');
+        });
     }
 
     // --- Report move to MCP server ---
@@ -141,6 +166,7 @@ document.addEventListener("DOMContentLoaded", function () {
             document.getElementById("pgnInput").value = game.pgn();
             document.getElementById("fenInput").value = game.fen();
             board.position(game.fen());
+            removeHighlights();
 
             // --- Report to MCP Coach ---
             const history = game.history({ verbose: true });
@@ -251,6 +277,14 @@ document.addEventListener("DOMContentLoaded", function () {
         };
 
         let onClick = function (source, target) {
+            // Check for Socratic Challenge response
+            if (currentChallenge && source === currentChallenge.target_square) {
+                const panel = document.getElementById('coach-messages');
+                panel.innerHTML = `<div class="alert alert-success mt-2">✨ <strong>Perfect!</strong> You found the critical piece. That is exactly where the tension is focused!</div>` + panel.innerHTML;
+                removeHighlights();
+                currentChallenge = null;
+            }
+
             onClickPiece(source, target);
             prepareMove();
         };
@@ -270,6 +304,9 @@ document.addEventListener("DOMContentLoaded", function () {
         return {
             reset: function () {
                 game.reset();
+                removeHighlights();
+                currentChallenge = null;
+
                 uciCmd('setoption name Contempt value 0');
                 this.setSkillLevel(0);
                 uciCmd('setoption name King Safety value 0');
@@ -412,6 +449,8 @@ document.addEventListener("DOMContentLoaded", function () {
     document.getElementById("newGameBtn").addEventListener("click", function () {
         gameInstance.reset();
         gameInstance.start();
+        removeHighlights();
+        currentChallenge = null;
     });
 
     document.getElementById("takeBackBtn").addEventListener("click", function () {
@@ -429,6 +468,8 @@ document.addEventListener("DOMContentLoaded", function () {
     document.getElementById("resetGameBtn").addEventListener("click", function () {
         gameInstance.reset();
         gameInstance.start();
+        removeHighlights();
+        currentChallenge = null;
     });
 
     document.getElementById("gameMode").addEventListener("change", function () {

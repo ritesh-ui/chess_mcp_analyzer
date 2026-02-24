@@ -32,7 +32,9 @@ game_context = {
     "last_move": None,
     "turn": "white",
     "updated_at": None,
-    "prev_score": 0.3 # Average white advantage at start
+    "prev_score": 0.3, # Average white advantage at start
+    "hot_squares": [], # List of {square: 'a1', type: 'gold'|'red'}
+    "active_challenge": None # {target_square: 'e4', message: '...'}
 }
 
 # --- Connection Manager ---
@@ -442,7 +444,35 @@ async def push_auto_analysis(fen: str):
                         else:
                             feedback = f"Look closely! You have a chance to challenge their <strong>{p_name}</strong>."
 
-            # 5. ASSEMBLE FRIENDLY MESSAGE
+            # 5. HEATMAP & SOCRATIC LOGIC
+            hot_squares = []
+            active_challenge = None
+            
+            if len(analysis) > 0:
+                best_move = analysis[0]["pv"][0]
+                # Gold: The target square of the best move (opportunity)
+                hot_squares.append({"square": chess.square_name(best_move.to_square), "type": "gold"})
+                
+                # Red: Threatened piece if the engine's best move is a capture
+                if current_board.is_capture(best_move):
+                    hot_squares.append({"square": chess.square_name(best_move.to_square), "type": "red"})
+
+            # Socratic Challenge: If user made a mistake, challenge them to find the better move piece
+            if is_player_move and cp_loss > 100:
+                best_move = analysis[0]["pv"][0] 
+                best_piece = current_board.piece_at(best_move.from_square)
+                if best_piece:
+                    p_name = get_piece_name(best_piece.symbol())
+                    active_challenge = {
+                        "target_square": chess.square_name(best_move.from_square),
+                        "message": f"Wait! That last move was risky. Can you find the <strong>{p_name}</strong> that is best positioned to restore order?"
+                    }
+                    prediction = active_challenge["message"]
+
+            game_context["hot_squares"] = hot_squares
+            game_context["active_challenge"] = active_challenge
+
+            # 6. ASSEMBLE FRIENDLY MESSAGE
             friendly_intro = get_friendly_quality_message(move_quality, is_player_move, eval_val)
             header_text = move_quality if is_player_move else f"Engine plays: [Hidden]"
             
@@ -469,7 +499,12 @@ async def push_auto_analysis(fen: str):
                 html_msg += f"<div style='margin-top:8px; color:#0d6efd'>💡 A better approach would have involved: <strong>{better_hint}</strong></div>"
 
             # Broadcast to GUI
-            await manager.broadcast({"type": "coach_tip", "message": html_msg})
+            await manager.broadcast({
+                "type": "coach_tip", 
+                "message": html_msg,
+                "hot_squares": hot_squares,
+                "challenge": active_challenge
+            })
         finally:
             await engine.quit()
     except Exception as e:
