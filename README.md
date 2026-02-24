@@ -1,101 +1,94 @@
-# Grandmaster-MCP: Chess Intelligence Layer
+# Grandmaster-MCP: Chess Intelligence & AI Coach
 
-Grandmaster-MCP is a powerful chess coaching system that connects a local Stockfish engine to Claude Desktop (or any other MCP client). It allows for real-time game analysis, tactical motif detection, and engine-backed move suggestions.
+Grandmaster-MCP is an advanced chess intelligence system that bridges the gap between a local Stockfish 16 engine and Large Language Models (like Claude). It combines a high-performance chess GUI with a real-time coaching layer.
 
-## Features
+## 🏗 Architecture
 
-- **Standardized Tools**:
-  - `analyze_pgn`: Full move-by-move analysis of a PGN string.
-  - `get_hint`: Context-aware tactical hints.
-  - `get_best_move`: Direct best-move lookup for any FEN position.
-  - `play_engine_move`: Play against Stockfish with state tracking.
-- **Integrated Chess AI Coach GUI**:
-  - A real-time chess web interface powered by Stockfish 16.
-  - Automatically syncs every move to the MCP server for analysis.
-  - Features an **AI Coach** panel where Claude pushes real-time tactical suggestions via WebSocket.
-- **Intelligence Layer**:
-  - Blunder, Mistake, and Inaccuracy classification based on Centipawn loss.
-  - Tactical motif detection (Check, Capture, Promotion, Back-rank threats).
-- **LLM Optimization**:
-  - Includes a custom "Grandmaster Coach" prompt template to ensure the LLM uses engine data before providing feedback.
+```mermaid
+sequenceDiagram
+    participant P as Player
+    participant GUI as Chess GUI (Port 8080)
+    participant HUB as MCP Hub (Port 8000)
+    participant SF as Stockfish 16
+    participant C as Claude Desktop
 
-## Prerequisites
+    P->>GUI: Makes a move
+    GUI->>HUB: POST /game/sync (FEN, PGN)
+    HUB->>SF: Analyze position
+    SF-->>HUB: Evaluation & Move Info
+    HUB-->>GUI: WebSocket: coach_tip (Auto-Analysis)
+    GUI->>P: Displays "Engine Eval" in Coach Panel
 
-- [uv](https://github.com/astral-sh/uv) (Python package manager)
-- [Stockfish](https://stockfishchess.org/) (Installed via Homebrew: `brew install stockfish`)
+    Note over C, HUB: Optional Deep Coaching
+    C->>HUB: get_game_context()
+    HUB-->>C: Current Board State
+    C->>HUB: push_coaching_tip("Tactical insight...")
+    HUB-->>GUI: WebSocket: coach_tip (Claude Feedback)
+    GUI->>P: Displays Claude's insight
+```
 
-## Installation
+## 🌟 Key Features
 
-1. Clone this repository (or ensure you are in the project folder).
-2. Sync dependencies:
-   ```bash
-   uv sync
-   ```
+- **Integrated Chess AI Coach GUI**: A real-time chess web interface powered by Stockfish 16.
+- **Live Auto-Analysis**: Automatically pushes engine evaluations to the GUI after every move.
+- **MCP Tool Integration**:
+  - `analyze_pgn`: Full move-by-move analysis.
+  - `get_hint` & `get_best_move`: Context-aware tactical suggestions.
+  - `push_coaching_tip`: Allows Claude to broadcast custom coaching messages to the GUI.
+- **WebSocket Hub**: Ensures instant, bi-directional communication between the game and the AI.
 
-## Setup for Claude Desktop
+## 🛠 Setup Instructions
 
-1. Open your Claude Desktop configuration file:
-   `~/Library/Application Support/Claude/claude_desktop_config.json`
-2. Add the following to the `mcpServers` object:
-   ```json
-   "Grandmaster-Coach": {
-     "command": "uv",
-     "args": [
-       "--directory",
-       "/Users/riteshsingh/Desktop/Files/VSCode/chess_analyzer",
-       "run",
-       "mcp_server.py"
-     ]
-   }
-   ```
-3. Restart Claude Desktop.
+### 1. Prerequisites
+- **Python 3.10+**
+- **[uv](https://github.com/astral-sh/uv)** (Python package manager)
+- **Stockfish 16**: `brew install stockfish` (on macOS) or ensures it's in your PATH.
 
-## Running the Application
-
-To experience the full AI-coached chess game, you need two processes running:
-
-### 1. Start the Backend (MCP Server)
+### 2. Backend Initialization
 ```bash
+# Install dependencies
+uv sync
+
+# Start the MCP Hub & WebSocket Server
 uv run python mcp_server.py
 ```
-Starts the FastAPI + WebSocket hub on `http://localhost:8000`.
+The server will start on `http://localhost:8000`.
 
-### 2. Start the Frontend (Chess GUI)
+### 3. Frontend Initialization
 ```bash
+# Navigate to GUI folder
 cd stockfish-chess-web-gui
+
+# Start a local web server
 python3 -m http.server 8080
 ```
 Then open **[http://localhost:8080](http://localhost:8080)** in your browser.
 
----
-
-## How it Works
-
-1. **You play a move** in the browser GUI.
-2. **The GUI reports** the FEN, PGN, and last move to the MCP server.
-3. **You ask Claude** for a tip or analysis.
-4. **Claude calls MCP tools** to read the board state and pushes a tip back.
-5. **The tip appears instantly** in the GUI's "AI Coach" panel.
-
----
-
-## How to Stop or Disable the Server
-
-Since Claude Desktop launches the server automatically upon startup, you have two ways to stop it:
-
-### 1. Temporarily Stop (Close Claude)
-Simply quitting the Claude Desktop app will terminate the background `mcp_server.py` process.
-
-### 2. Disable Permanently
-To prevent Claude from starting the server again:
-- Open `claude_desktop_config.json`.
-- Remove the `Grandmaster-Coach` entry from the `mcpServers` list.
-- Save and restart Claude.
-
-## Testing with Inspector
-
-To test the tools manually without opening Claude:
-```bash
-uv run fastmcp dev mcp_server.py
+### 4. Claude Desktop Integration
+Add the following to your `claude_desktop_config.json`:
+```json
+"Grandmaster-Coach": {
+  "command": "uv",
+  "args": [
+    "--directory",
+    "/Users/riteshsingh/Desktop/Files/VSCode/chess_analyzer",
+    "run",
+    "mcp_server.py"
+  ]
+}
 ```
-This will open the MCP Inspector in your browser at `http://localhost:6274`.
+
+## 🚀 How to Use
+
+1. **Play a Move**: Make a move in the browser.
+2. **Watch the Coach**: The "AI Coach" panel will instantly show an engine evaluation (e.g., `+0.50`).
+3. **Ask Claude**: In Claude Desktop, ask: *"How is my position looking?"* or *"Give me a coaching tip."* Claude will analyze the live game state and push a message directly to your browser panel.
+
+## 🔍 Troubleshooting
+
+- **Panel shows "OFFLINE"**: Ensure the `mcp_server.py` is running and no other process is using port 8000.
+- **No tips appearing**: Ensure you only have **one** instance of the server running (either in a terminal or launched by Claude Desktop, not both).
+- **Stockfish not found**: Run `brew install stockfish` or update `STOCKFISH_PATH` in `mcp_server.py`.
+
+---
+*Created by Antigravity AI Coach Integration*
