@@ -3,6 +3,7 @@ document.addEventListener("DOMContentLoaded", function () {
     let useDepth = true;
     let currentMode = 'Player vs Engine';
     let board;
+    let playerColor = 'white'; // Higher scope for Coach sync
     const MCP_SERVER = 'http://localhost:8000';
     const WS_URL = 'ws://localhost:8000/ws';
     let coachSocket = null;
@@ -58,7 +59,6 @@ document.addEventListener("DOMContentLoaded", function () {
         let evaler = typeof STOCKFISH === "function" ? STOCKFISH() : new Worker(options.stockfishjs || './engine/stockfish-nnue-16-single.js');
         let engineStatus = {};
         let displayScore = true;
-        let playerColor = 'white';
         let isEngineRunning = false;
         let evaluation_el = document.getElementById("evaluation");
         let gameScoreEl = document.getElementById("game-score");

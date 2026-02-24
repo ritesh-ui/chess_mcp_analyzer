@@ -161,13 +161,24 @@ async def game_sync(request: GameSyncRequest):
     game_context["last_move"] = request.last_move
     game_context["turn"] = request.turn
     game_context["player_color"] = request.player_color
-    game_context["updated_at"] = datetime.datetime.utcnow().isoformat()
+    game_context["updated_at"] = datetime.datetime.now(datetime.UTC).isoformat()
     
     # 2. SYNC GLOBAL BOARD (Fix for Stockfish tools)
     try:
         board = chess.Board(request.fen)
     except Exception as e:
         print(f"[Error] Failed to sync board: {e}")
+
+    # Use san move for better logging if available
+    move_display = request.last_move
+    if request.last_move and len(request.last_move) >= 4:
+        try:
+            # We need the previous board to get the SAN
+            # But the request.fen is already the NEW board.
+            # So we just log the raw move for now, or trust the frontend sent SAN?
+            # Actually, request.last_move in index.js is 'from + to' (UCI).
+            pass
+        except: pass
 
     print(f"[Game Sync] Move: {request.last_move} | Turn: {request.turn} | Player: {request.player_color} | FEN: {request.fen[:40]}...")
     
@@ -240,6 +251,41 @@ def get_friendly_quality_message(quality: str, is_player: bool, eval_val: float)
             
     return "The game is evolving. Let's see what happens next."
 
+def get_conceptual_hint(board: chess.Board, move: chess.Move) -> str:
+    piece = board.piece_at(move.from_square)
+    if not piece: return "Look for a strategic improvement."
+    
+    p_name = get_piece_name(piece.symbol())
+    is_capture = board.is_capture(move)
+    is_check = board.is_check()
+    
+    # Regional hints
+    file_idx = chess.square_file(move.to_square)
+    rank_idx = chess.square_rank(move.to_square)
+    
+    region = "center"
+    if file_idx < 3: region = "Queenside"
+    elif file_idx > 4: region = "Kingside"
+    
+    if is_capture:
+        return f"There's a strong tactical opportunity to make a <strong>Capture</strong>."
+    
+    if piece.piece_type == chess.PAWN:
+        if region == "center":
+            return "Consider solidifying or challenging the <strong>center</strong> with your pawns."
+        return f"A pawn move on the <strong>{region}</strong> could improve your structure."
+        
+    if piece.piece_type in [chess.KNIGHT, chess.BISHOP]:
+        return f"One of your <strong>{p_name}s</strong> is looking for a more active square on the {region}."
+        
+    if piece.piece_type == chess.ROOK:
+        return f"Look for an opportunity to activate your <strong>Rook</strong>, perhaps on an open file."
+        
+    if piece.piece_type == chess.QUEEN:
+        return "Your <strong>Queen</strong> could take a more dominant position in the game."
+
+    return f"Think about how to better position your <strong>{p_name}</strong>."
+
 async def push_auto_analysis(fen: str):
     """Performs a deep Stockfish analysis and pushes tactical coaching to the GUI."""
     if not os.path.exists(STOCKFISH_PATH):
@@ -250,7 +296,6 @@ async def push_auto_analysis(fen: str):
         player_color = game_context.get("player_color", "white")
         
         # Determine who just moved
-        # If it is now BLACK's turn, WHITE just moved.
         side_who_moved = "white" if current_board.turn == chess.BLACK else "black"
         is_player_move = (side_who_moved == player_color)
         
@@ -262,13 +307,12 @@ async def push_auto_analysis(fen: str):
             top_pv = analysis[0]
             score = top_pv["score"].relative.score(mate_score=10000)
             
-            # Format evaluation for display
-            # Perspective of white
+            # perspective of white
             white_score = score if current_board.turn == chess.WHITE else -score
             eval_val = white_score / 100.0 if white_score is not None else 0
             prefix = "+" if eval_val > 0 else ""
             
-            # 2. CALCULATE MOVE QUALITY (CP Loss)
+            # 2. CALCULATE MOVE QUALITY
             move_quality = "Good"
             cp_loss = 0
             feedback = ""
@@ -295,18 +339,21 @@ async def push_auto_analysis(fen: str):
             else: 
                 move_quality = "✅ Good Move"
 
-            # 3. THREAT DETECTION & PREDICTION
+            # 3. CONCEPTUAL HINTS
             prediction = ""
             if is_player_move:
-                # User just moved, tell them what the opponent (engine) is planning
+                # User just moved, hint at what the engine might do without giving the square
                 if len(analysis) > 0:
-                    best_opp_move = current_board.san(analysis[0]["pv"][0])
-                    prediction = f"The computer is likely planning <strong>{best_opp_move}</strong> next."
+                    best_opp_move = analysis[0]["pv"][0]
+                    opp_piece = current_board.piece_at(best_opp_move.from_square)
+                    opp_p_name = get_piece_name(opp_piece.symbol()) if opp_piece else "piece"
+                    prediction = f"The computer is looking to activate its <strong>{opp_p_name}</strong> soon."
             else:
-                # Engine just moved, tell the user what THEIR best move is
+                # Engine just moved, give a CONCEPTUAL hint for the user
                 if len(analysis) > 0:
-                    best_user_move = current_board.san(analysis[0]["pv"][0])
-                    prediction = f"Your best response here is <strong>{best_user_move}</strong>."
+                    best_user_move = analysis[0]["pv"][0]
+                    hint = get_conceptual_hint(current_board, best_user_move)
+                    prediction = f"Coach Hint: <strong>{hint}</strong>"
             
             # 4. MATERIAL/HUNG PIECES
             if "score" in top_pv and top_pv["pv"]:
@@ -316,29 +363,35 @@ async def push_auto_analysis(fen: str):
                     if captured_piece:
                         p_name = get_piece_name(captured_piece.symbol())
                         if is_player_move:
-                            feedback = f"Heads up! Your <strong>{p_name}</strong> on {chess.square_name(best_move.to_square)} is under attack!"
+                            feedback = f"Heads up! Your <strong>{p_name}</strong> is under pressure."
                         else:
-                            feedback = f"Look! You can capture their <strong>{p_name}</strong> on {chess.square_name(best_move.to_square)}!"
+                            feedback = f"Look closely! You have a chance to challenge their <strong>{p_name}</strong>."
 
             # 5. ASSEMBLE FRIENDLY MESSAGE
             friendly_intro = get_friendly_quality_message(move_quality, is_player_move, eval_val)
+            header_text = move_quality if is_player_move else f"Engine plays: [Hidden]"
             
-            # Display eval from player perspective? No, standard is white +/-. 
-            # Let's stick to white +/- but maybe add (Winning/Losing) text.
-            
-            header_text = move_quality if is_player_move else f"Engine plays: {game_context.get('last_move')}"
-            
+            # Note: We keep the header_text clear for the player's move quality, 
+            # but for engine moves we can hide the exact SAN if you want, 
+            # though the user already sees it on the board. 
+            # Let's just focus on the suggestion part.
+            if not is_player_move:
+                # Get the last move from game_context or board
+                lm = game_context.get("last_move", "??")
+                header_text = f"Engine Move Analysis"
+
             html_msg = f"<div style='margin-bottom:8px'><strong style='color:{color}; font-size:1.1em'>{header_text}</strong> <span style='color:#6c757d'>(Eval: {prefix}{eval_val:0.2f})</span></div>"
             html_msg += f"<div style='margin-bottom:10px; font-style:italic; font-size:1.05em; color:#212529'>\"{friendly_intro}\"</div>"
             
             if feedback:
                 html_msg += f"<div style='margin-bottom:8px; color:#d63384'>💡 {feedback}</div>"
             
-            html_msg += f"<div style='color:#495057'>🎯 {prediction}</div>"
+            html_msg += f"<div style='color:#495057'>💭 {prediction}</div>"
             
             if is_player_move and cp_loss > 50 and "pv" in top_pv:
-                better_move = current_board.san(top_pv["pv"][0])
-                html_msg += f"<div style='margin-top:8px; color:#0d6efd'>💡 A better choice would have been <strong>{better_move}</strong>.</div>"
+                best_move = top_pv["pv"][0]
+                better_hint = get_conceptual_hint(current_board, best_move)
+                html_msg += f"<div style='margin-top:8px; color:#0d6efd'>💡 A better approach would have involved: <strong>{better_hint}</strong></div>"
 
             # Broadcast to GUI
             await manager.broadcast({"type": "coach_tip", "message": html_msg})
