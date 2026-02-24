@@ -316,6 +316,13 @@ document.addEventListener("DOMContentLoaded", function () {
                 displayStatus();
                 prepareMove();
                 announced_game_over = false;
+
+                // Clear AI Coach Memory UI
+                const chatHistory = document.getElementById('coach-chat-history');
+                if (chatHistory) chatHistory.innerHTML = '<div class="text-muted small text-center italic">Type a question below to start a conversation...</div>';
+
+                const coachMsg = document.getElementById('coach-messages');
+                if (coachMsg) coachMsg.innerHTML = '<div class="text-center py-3"><div class="spinner-border spinner-border-sm text-primary" role="status"></div><div class="mt-2 text-muted small">Waking up the Grandmaster...</div></div>';
             },
             undo: function () {
                 game.undo();

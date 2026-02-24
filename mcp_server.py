@@ -216,6 +216,10 @@ async def coach_query(request: CoachQuery):
 @app.post("/reset")
 async def reset_board():
     board.reset()
+    # Reset internal coaching memory
+    game_context["prev_score"] = 0.3
+    game_context["pgn"] = ""
+    game_context["last_move"] = None
     # BROADCAST CHANGE
     asyncio.run_coroutine_threadsafe(manager.broadcast(), loop)
     return {"status": "reset", "fen": board.fen()}
