@@ -30,7 +30,8 @@ game_context = {
     "pgn": "",
     "last_move": None,
     "turn": "white",
-    "updated_at": None
+    "updated_at": None,
+    "prev_score": 0.3 # Average white advantage at start
 }
 
 # --- Connection Manager ---
@@ -175,31 +176,79 @@ async def game_sync(request: GameSyncRequest):
     return {"status": "synced"}
 
 async def push_auto_analysis(fen: str):
-    """Performs a quick Stockfish analysis and pushes the tip to the GUI."""
+    """Performs a deep Stockfish analysis and pushes tactical coaching to the GUI."""
     if not os.path.exists(STOCKFISH_PATH):
         return
         
     try:
-        # We use a temporary board for analysis to be safe
-        analysis_board = chess.Board(fen)
+        current_board = chess.Board(fen)
         transport, engine = await chess.engine.popen_uci(STOCKFISH_PATH)
         try:
-            # Quick 0.2s analysis for 'live' feel
-            analysis = await engine.analyse(analysis_board, chess.engine.Limit(time=0.2))
-            score = analysis["score"].relative.score(mate_score=10000)
+            # 1. ANALYZE CURRENT POSITION
+            # Side to move here is the OPPONENT of the person who just played
+            analysis = await engine.analyse(current_board, chess.engine.Limit(time=0.5), multipv=3)
             
-            # Format evaluation
+            top_pv = analysis[0]
+            score = top_pv["score"].relative.score(mate_score=10000)
+            
+            # Format evaluation for display
             eval_val = score / 100.0 if score is not None else 0
             prefix = "+" if eval_val > 0 else ""
             
-            # Basic coaching summary
-            feedback = "Position is balanced."
-            if score > 150: feedback = "White has a significant advantage."
-            elif score > 50: feedback = "White is slightly better."
-            elif score < -150: feedback = "Black has a significant advantage."
-            elif score < -50: feedback = "Black is slightly better."
+            # 2. CALCULATE MOVE QUALITY (CP Loss)
+            # We use the score from the PREVIOUS position to see how much was lost
+            move_quality = "Good"
+            cp_loss = 0
+            feedback = ""
             
-            message = f"**Engine Eval: {prefix}{eval_val:0.2f}**\n{feedback}"
+            # prev_score is from the perspective of the player who just moved
+            # (stored during the last analysis)
+            prev_score = game_context.get("prev_score", 0.3)
+            
+            # current_score_from_player_perspective = -score
+            # because 'score' is relative to the side now to move (the opponent)
+            player_score_after = -score if score is not None else 0
+            cp_loss = prev_score - player_score_after
+            
+            # Update prev_score for the NEXT move (from the perspective of the side now to move)
+            game_context["prev_score"] = score if score is not None else 0
+            
+            if cp_loss > 300: move_quality = "🚨 **Blunder**"
+            elif cp_loss > 150: move_quality = "❓ **Mistake**"
+            elif cp_loss > 50: move_quality = "⚠️ **Inaccuracy**"
+            elif cp_loss < -50: move_quality = "✨ **Great Move**"
+            else: move_quality = "✅ **Good Move**"
+
+            # 3. THREAT DETECTION & OPPONENT PREDICTION
+            prediction = ""
+            if len(analysis) > 0:
+                best_opp_move = current_board.san(analysis[0]["pv"][0])
+                prediction = f"Opponent is likely planning **{best_opp_move}** next."
+            
+            # 4. MATERIAL/HUNG PIECES
+            # Simple check: is the top move a capture of a valuable piece?
+            if "score" in top_pv and top_pv["pv"]:
+                best_move = top_pv["pv"][0]
+                if current_board.is_capture(best_move):
+                    captured_piece = current_board.piece_at(best_move.to_square)
+                    if captured_piece:
+                        feedback = f"Careful! Your **{captured_piece.symbol().upper()}** is under attack!"
+
+            # 5. ASSEMBLE FINAL MESSAGE
+            status_line = f"### {move_quality} (Eval: {prefix}{eval_val:0.2f})"
+            # We don't show the technical "Loss" if it's a good move
+            if cp_loss > 100:
+                status_line += f"\nLoss: {cp_loss/100.0:0.1f} points"
+
+            msg_parts = [status_line]
+            if feedback: msg_parts.append(f"💡 {feedback}")
+            msg_parts.append(f"🔮 {prediction}")
+            
+            if cp_loss > 50 and "pv" in top_pv:
+                # Suggest a better move if they messed up
+                msg_parts.append(f"🎯 Better was: **{current_board.san(top_pv['pv'][0])}**")
+
+            message = "\n\n".join(msg_parts)
             
             # Broadcast to GUI
             await manager.broadcast({"type": "coach_tip", "message": message})
