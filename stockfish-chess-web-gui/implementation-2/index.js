@@ -14,26 +14,13 @@ document.addEventListener("DOMContentLoaded", function () {
     // --- Audio Engine ---
     const moveSound = new Audio('https://images.chesscomfiles.com/chess-themes/sounds/_MP3_/default/move-self.mp3');
     const captureSound = new Audio('https://images.chesscomfiles.com/chess-themes/sounds/_MP3_/default/capture.mp3');
-    const ambientHall = new Audio('https://www.soundhelix.com/examples/mp3/SoundHelix-Song-17.mp3');
-    ambientHall.loop = true;
-    ambientHall.volume = 0.15;
 
     function playMoveSound(isCapture) {
         if (isCapture) captureSound.play().catch(e => { });
         else moveSound.play().catch(e => { });
     }
 
-    // Toggle Ambient
-    document.getElementById('toggleAmbientBtn').addEventListener('click', function (e) {
-        e.stopPropagation(); // Don't trigger accordion
-        if (ambientHall.paused) {
-            ambientHall.play().catch(e => { });
-            this.textContent = '🔊';
-        } else {
-            ambientHall.pause();
-            this.textContent = '🔇';
-        }
-    });
+
 
     // --- Coach WebSocket (server -> GUI push) ---
     function connectCoachSocket() {
@@ -365,10 +352,6 @@ document.addEventListener("DOMContentLoaded", function () {
                 uciCmd('isready');
                 announced_game_over = false;
                 prepareMove();
-
-                // Start Ambient Hall (user interaction required for some browsers, 
-                // but usually works after first click)
-                ambientHall.play().catch(e => console.log("Ambient audio blocked until interaction"));
             },
             undo: function () {
                 game.undo(); game.undo();
