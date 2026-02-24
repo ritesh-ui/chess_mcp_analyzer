@@ -34,7 +34,8 @@ game_context = {
     "updated_at": None,
     "prev_score": 0.3, # Average white advantage at start
     "hot_squares": [], # List of {square: 'a1', type: 'gold'|'red'}
-    "active_challenge": None # {target_square: 'e4', message: '...'}
+    "active_challenge": None, # {target_square: 'e4', message: '...'}
+    "analysis_history": [] # List of {fen: str, move: str, cp_loss: float, turn: str}
 }
 
 # --- Connection Manager ---
@@ -215,6 +216,75 @@ async def coach_query(request: CoachQuery):
     except Exception as e:
         return {"response": f"Sorry, I encountered an error while thinking: {str(e)}"}
 
+@app.post("/game/review")
+async def game_review():
+    """
+    Summarizes the game and identifies the biggest blunder for the 'Memory Session'.
+    """
+    history = game_context.get("analysis_history", [])
+    if not history:
+        return {"lessons": ["No moves recorded for review."], "blunder": None}
+
+    # 1. Identify Biggest Blunder
+    # Filter for player moves (assuming we're coaching the player_color)
+    player_color = game_context.get("player_color", "white")
+    player_history = [h for h in history if h["turn"] == player_color]
+    
+    biggest_blunder = None
+    if player_history:
+        # Sort by CP loss descending
+        sorted_history = sorted(player_history, key=lambda x: x["cp_loss"], reverse=True)
+        # Only count if loss > 1.0 (100cp)
+        if sorted_history[0]["cp_loss"] > 1.0:
+            biggest_blunder = sorted_history[0]
+
+    # 2. Generate Lessons using LLM
+    api_key = os.getenv("OPENAI_API_KEY")
+    summary = "The game was complex. Focus on center control and piece activity."
+    
+    if api_key:
+        client = OpenAI(api_key=api_key)
+        game_log = "\n".join([f"Move: {h['move']} | Turn: {h['turn']} | CP Loss: {h['cp_loss']:.2f}" for h in history[-20:]])
+        
+        system_prompt = "You are 'The Grandmaster Coach'. Summarize the key strategic takeaway from this game session in exactly 3 short bullet points. Focus on general improvement advice."
+        user_prompt = f"Game History (Last 20 moves):\n{game_log}\n\nSummarize the Top 3 Lessons:"
+
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.7
+            )
+            summary = response.choices[0].message.content
+        except: pass
+
+    # 3. Get best move for the blunder drill
+    drill_data = None
+    if biggest_blunder and os.path.exists(STOCKFISH_PATH):
+        try:
+            temp_board = chess.Board(biggest_blunder["fen"])
+            transport, engine = await chess.engine.popen_uci(STOCKFISH_PATH)
+            analysis = await engine.analyse(temp_board, chess.engine.Limit(depth=18))
+            await engine.quit()
+            
+            if analysis:
+                best_move = temp_board.san(analysis[0]["pv"][0])
+                drill_data = {
+                    "fen": biggest_blunder["fen"],
+                    "played_move": biggest_blunder["move"],
+                    "best_move": best_move,
+                    "target_square": chess.square_name(analysis[0]["pv"][0].from_square)
+                }
+        except: pass
+
+    return {
+        "lessons": summary.split("\n") if "\n" in summary else [summary],
+        "blunder": drill_data
+    }
+
 @app.post("/reset")
 async def reset_board():
     board.reset()
@@ -222,6 +292,9 @@ async def reset_board():
     game_context["prev_score"] = 0.3
     game_context["pgn"] = ""
     game_context["last_move"] = None
+    game_context["analysis_history"] = []
+    game_context["active_challenge"] = None
+    game_context["hot_squares"] = []
     # BROADCAST CHANGE
     asyncio.run_coroutine_threadsafe(manager.broadcast(), loop)
     return {"status": "reset", "fen": board.fen()}
@@ -400,6 +473,14 @@ async def push_auto_analysis(fen: str):
             
             game_context["prev_score"] = score if score is not None else 0
             
+            # Record move in history for Post-Game Review
+            game_context["analysis_history"].append({
+                "fen": fen,
+                "move": game_context.get("last_move", "??"),
+                "cp_loss": cp_loss,
+                "turn": side_who_moved
+            })
+
             color = "#198754" # Default Green
             if cp_loss > 300: 
                 move_quality = "🚨 Blunder"
