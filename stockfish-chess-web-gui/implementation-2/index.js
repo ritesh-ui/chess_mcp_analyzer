@@ -440,5 +440,77 @@ document.addEventListener("DOMContentLoaded", function () {
         navigator.clipboard.writeText(fenText);
     });
 
+    // --- AI Coach Chat Logic ---
+    async function askCoach() {
+        const input = document.getElementById('coach-chat-input');
+        const history = document.getElementById('coach-chat-history');
+        const sendBtn = document.getElementById('coach-chat-send');
+        const question = input.value.trim();
+
+        if (!question) return;
+
+        // 1. Add User message to UI
+        const userMsg = document.createElement('div');
+        userMsg.style = "align-self: flex-end; background: #e7f3ff; padding: 8px 12px; border-radius: 12px 12px 0 12px; max-width: 85%; border: 1px solid #cce5ff;";
+        userMsg.innerHTML = `<strong>You:</strong> ${question}`;
+        history.appendChild(userMsg);
+
+        // Clear input and scroll
+        input.value = '';
+        history.scrollTop = history.scrollHeight;
+
+        // 2. Disable input while thinking
+        input.disabled = true;
+        sendBtn.disabled = true;
+
+        const loadingMsg = document.createElement('div');
+        loadingMsg.style = "align-self: flex-start; background: #f1f3f5; padding: 8px 12px; border-radius: 12px 12px 12px 0; max-width: 85%; border: 1px solid #dee2e6;";
+        loadingMsg.innerHTML = `<em>The Grandmaster is thinking...</em>`;
+        history.appendChild(loadingMsg);
+        history.scrollTop = history.scrollHeight;
+
+        // 3. Request to MCP Server
+        try {
+            const response = await fetch(`${MCP_SERVER}/coach/query`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    fen: game.fen(),
+                    pgn: game.pgn(),
+                    question: question,
+                    player_color: playerColor
+                })
+            });
+            const data = await response.json();
+
+            // Remove loading
+            history.removeChild(loadingMsg);
+
+            // Add Coach response
+            const coachMsg = document.createElement('div');
+            coachMsg.style = "align-self: flex-start; background: #fff; padding: 8px 12px; border-radius: 12px 12px 12px 0; max-width: 85%; border: 1px solid #dee2e6; box-shadow: 0 1px 2px rgba(0,0,0,0.05);";
+            coachMsg.innerHTML = `<strong>Coach:</strong> ${data.response || 'Sorry, I lost my train of thought.'}`;
+            history.appendChild(coachMsg);
+
+        } catch (err) {
+            console.error('Coach Query failed:', err);
+            history.removeChild(loadingMsg);
+            const errMsg = document.createElement('div');
+            errMsg.className = "text-danger small";
+            errMsg.textContent = "Error communicating with the Grandmaster. Is the server running?";
+            history.appendChild(errMsg);
+        } finally {
+            input.disabled = false;
+            sendBtn.disabled = false;
+            history.scrollTop = history.scrollHeight;
+            input.focus();
+        }
+    }
+
+    document.getElementById('coach-chat-send').addEventListener('click', askCoach);
+    document.getElementById('coach-chat-input').addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') askCoach();
+    });
+
     gameInstance.start();
 });

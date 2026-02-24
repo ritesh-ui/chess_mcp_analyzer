@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from openai import OpenAI
 from fastmcp import FastMCP
 import chess
 import chess.engine
@@ -118,6 +119,12 @@ class GameSyncRequest(BaseModel):
     turn: str
     player_color: str = "white"
 
+class CoachQuery(BaseModel):
+    fen: str
+    pgn: str
+    question: str
+    player_color: str = "white"
+
 # --- HTTP Endpoints for React UI ---
 @app.get("/status")
 async def get_status():
@@ -141,6 +148,70 @@ async def make_move(request: MoveRequest):
             raise HTTPException(status_code=400, detail="Illegal move")
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/coach/query")
+async def coach_query(request: CoachQuery):
+    """
+    Handles interactive questions from the user via the LLM.
+    """
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return {"response": "I'd love to chat more deeply, but my AI brain (OpenAI API Key) isn't plugged in right now! Please set the OPENAI_API_KEY environment variable to enable full interactive coaching."}
+
+    client = OpenAI(api_key=api_key)
+    
+    # 1. Analyze with Stockfish first to provide context to the LLM
+    eval_str = "Unknown"
+    best_lines = []
+    if os.path.exists(STOCKFISH_PATH):
+        try:
+            # We use a temporary board for thread safety or just use the FEN
+            temp_board = chess.Board(request.fen)
+            transport, engine = await chess.engine.popen_uci(STOCKFISH_PATH)
+            analysis = await engine.analyse(temp_board, chess.engine.Limit(time=0.3), multipv=2)
+            await engine.quit()
+            
+            if analysis:
+                top = analysis[0]
+                score = top["score"].relative.score(mate_score=10000)
+                eval_val = score / 100.0 if score is not None else 0
+                eval_str = f"{'+' if eval_val > 0 else ''}{eval_val:.2f}"
+                for i, entry in enumerate(analysis):
+                    if "pv" in entry:
+                        line = temp_board.san(entry["pv"][0])
+                        best_lines.append(f"Rank {i+1}: {line}")
+        except Exception as e:
+            print(f"Error gathering Stockfish context for LLM: {e}")
+
+    # 2. Build the Prompt
+    system_prompt = (
+        "You are 'The Grandmaster Coach', a world-class chess mentor. "
+        "Your goal is to explain chess concepts in a human, encouraging, and clear way. "
+        "Avoid raw engine jargon or deep variations unless specifically asked. "
+        "Speak like a mentor who wants the student to improve their general understanding. "
+        f"You are coaching the {request.player_color} player."
+    )
+    
+    user_context = (
+        f"Game State (FEN): {request.fen}\n"
+        f"Move History (PGN): {request.pgn}\n"
+        f"Current Engine Evaluation: {eval_str}\n"
+        f"Top Engine Suggestions: {', '.join(best_lines)}\n\n"
+        f"Student Question: {request.question}"
+    )
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_context}
+            ],
+            temperature=0.7
+        )
+        return {"response": response.choices[0].message.content}
+    except Exception as e:
+        return {"response": f"Sorry, I encountered an error while thinking: {str(e)}"}
 
 @app.post("/reset")
 async def reset_board():
