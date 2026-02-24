@@ -11,6 +11,18 @@ document.addEventListener("DOMContentLoaded", function () {
     let drillData = null;
     let isDrillMode = false;
 
+    // --- Audio Engine ---
+    const moveSound = new Audio('https://images.chesscomfiles.com/chess-themes/sounds/_MP3_/default/move-self.mp3');
+    const captureSound = new Audio('https://images.chesscomfiles.com/chess-themes/sounds/_MP3_/default/capture.mp3');
+    const ambientHall = new Audio('https://www.soundhelix.com/examples/mp3/SoundHelix-Song-17.mp3');
+    ambientHall.loop = true;
+    ambientHall.volume = 0.15;
+
+    function playMoveSound(isCapture) {
+        if (isCapture) captureSound.play().catch(e => { });
+        else moveSound.play().catch(e => { });
+    }
+
     // --- Coach WebSocket (server -> GUI push) ---
     function connectCoachSocket() {
         coachSocket = new WebSocket(WS_URL);
@@ -35,6 +47,18 @@ document.addEventListener("DOMContentLoaded", function () {
                                 squareEl.classList.add(hs.type === 'gold' ? 'glow-gold' : 'glow-red');
                             }
                         });
+                    }
+
+                    // 2.5 Detection for "Brilliant" move ignite
+                    if (data.message && data.message.includes('Great Move')) {
+                        const targetSquare = data.hot_squares.find(s => s.type === 'gold')?.square;
+                        if (targetSquare) {
+                            const sqEl = document.querySelector(`.square-${targetSquare}`);
+                            if (sqEl) {
+                                sqEl.classList.add('brilliant-ignite');
+                                setTimeout(() => sqEl.classList.remove('brilliant-ignite'), 1500);
+                            }
+                        }
                     }
 
                     currentChallenge = data.challenge;
@@ -291,6 +315,8 @@ document.addEventListener("DOMContentLoaded", function () {
 
             let move = game.move({ from: source, to: target, promotion: document.getElementById("promote").value });
             if (move === null) return 'snapback';
+
+            playMoveSound(move.captured);
             prepareMove();
         };
 
@@ -327,6 +353,10 @@ document.addEventListener("DOMContentLoaded", function () {
                 uciCmd('isready');
                 announced_game_over = false;
                 prepareMove();
+
+                // Start Ambient Hall (user interaction required for some browsers, 
+                // but usually works after first click)
+                ambientHall.play().catch(e => console.log("Ambient audio blocked until interaction"));
             },
             undo: function () {
                 game.undo(); game.undo();
