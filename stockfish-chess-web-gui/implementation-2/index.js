@@ -1,4 +1,4 @@
-document.addEventListener("DOMContentLoaded", function() {
+document.addEventListener("DOMContentLoaded", function () {
     let game = new Chess();
     let useDepth = true;
     let currentMode = 'Player vs Engine';
@@ -27,7 +27,7 @@ document.addEventListener("DOMContentLoaded", function() {
                         new bootstrap.Collapse(coachCollapse, { toggle: true });
                     }
                 }
-            } catch(e) { console.error('Coach WS error:', e); }
+            } catch (e) { console.error('Coach WS error:', e); }
         };
         coachSocket.onclose = () => {
             document.getElementById('coach-status').textContent = '○ OFFLINE';
@@ -38,10 +38,17 @@ document.addEventListener("DOMContentLoaded", function() {
 
     // --- Report move to MCP server ---
     function reportToCoach(fen, pgn, lastMove, turn) {
+        const payload = {
+            fen,
+            pgn,
+            last_move: lastMove,
+            turn,
+            player_color: playerColor
+        };
         fetch(`${MCP_SERVER}/game/sync`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ fen, pgn, last_move: lastMove, turn })
+            body: JSON.stringify(payload)
         }).catch(err => console.warn('MCP sync failed (server offline?):', err));
     }
 
@@ -59,7 +66,7 @@ document.addEventListener("DOMContentLoaded", function() {
         let announced_game_over;
         let playerColorOriginal = playerColor;
 
-        let onDragStart = function(source, piece, position, orientation) {
+        let onDragStart = function (source, piece, position, orientation) {
             if (currentMode === 'Player vs Player') {
                 return !game.game_over();
             }
@@ -69,7 +76,7 @@ document.addEventListener("DOMContentLoaded", function() {
             }
         };
 
-        let onClickPiece = function(source, target) {
+        let onClickPiece = function (source, target) {
             let move = game.move({
                 from: source,
                 to: target,
@@ -79,7 +86,7 @@ document.addEventListener("DOMContentLoaded", function() {
             prepareMove();
         };
 
-        setInterval(function() {
+        setInterval(function () {
             if (announced_game_over) {
                 return;
             }
@@ -166,7 +173,7 @@ document.addEventListener("DOMContentLoaded", function() {
             }
         }
 
-        evaler.onmessage = function(event) {
+        evaler.onmessage = function (event) {
             let line;
             if (event && typeof event === "object") {
                 line = event.data;
@@ -183,7 +190,7 @@ document.addEventListener("DOMContentLoaded", function() {
             evaluation_el.textContent += line;
         };
 
-        engine.onmessage = function(event) {
+        engine.onmessage = function (event) {
             let line;
             if (event && typeof event === "object") {
                 line = event.data;
@@ -229,7 +236,7 @@ document.addEventListener("DOMContentLoaded", function() {
             displayStatus();
         };
 
-        let onDrop = function(source, target) {
+        let onDrop = function (source, target) {
             let move = game.move({
                 from: source,
                 to: target,
@@ -239,11 +246,11 @@ document.addEventListener("DOMContentLoaded", function() {
             prepareMove();
         };
 
-        let onSnapEnd = function() {
+        let onSnapEnd = function () {
             board.position(game.fen());
         };
 
-        let onClick = function(source, target) {
+        let onClick = function (source, target) {
             onClickPiece(source, target);
             prepareMove();
         };
@@ -261,18 +268,18 @@ document.addEventListener("DOMContentLoaded", function() {
         board = new ChessBoard('board', cfg);
 
         return {
-            reset: function() {
+            reset: function () {
                 game.reset();
                 uciCmd('setoption name Contempt value 0');
                 this.setSkillLevel(0);
                 uciCmd('setoption name King Safety value 0');
                 prepareMove();
             },
-            setPlayerColor: function(color) {
+            setPlayerColor: function (color) {
                 playerColor = color;
                 board.orientation(playerColor);
             },
-            setSkillLevel: function(skill) {
+            setSkillLevel: function (skill) {
                 if (skill < 0) {
                     skill = 0;
                 }
@@ -285,23 +292,23 @@ document.addEventListener("DOMContentLoaded", function() {
                 uciCmd('setoption name Skill Level Maximum Error value ' + max_err);
                 uciCmd('setoption name Skill Level Probability value ' + err_prob);
             },
-            setDepth: function(depth) {
+            setDepth: function (depth) {
                 uciCmd('setoption name Depth value ' + depth);
             },
-            setNodes: function(nodes) {
+            setNodes: function (nodes) {
                 uciCmd('setoption name Nodes value ' + nodes);
             },
-            setContempt: function(contempt) {
+            setContempt: function (contempt) {
                 uciCmd('setoption name Contempt value ' + contempt);
             },
-            setAggressiveness: function(value) {
+            setAggressiveness: function (value) {
                 uciCmd('setoption name Aggressiveness value ' + value);
             },
-            setDisplayScore: function(flag) {
+            setDisplayScore: function (flag) {
                 displayScore = flag;
                 displayStatus();
             },
-            start: function() {
+            start: function () {
                 uciCmd('ucinewgame');
                 uciCmd('isready');
                 engineStatus.engineReady = false;
@@ -310,21 +317,21 @@ document.addEventListener("DOMContentLoaded", function() {
                 prepareMove();
                 announced_game_over = false;
             },
-            undo: function() {
+            undo: function () {
                 game.undo();
                 game.undo();
                 prepareMove();
             },
-            flipBoard: function() {
+            flipBoard: function () {
                 board.flip();
             },
-            switchBoard: function() {
+            switchBoard: function () {
                 playerColorOriginal = playerColor;
                 playerColor = (playerColor === 'white') ? 'black' : 'white';
                 board.orientation(playerColor);
                 prepareMove();
             },
-            setMode: function(mode) {
+            setMode: function (mode) {
                 currentMode = mode;
                 displayStatus();
             }
@@ -346,7 +353,7 @@ document.addEventListener("DOMContentLoaded", function() {
     adjustScoreBarHeight();
     window.addEventListener('resize', adjustScoreBarHeight);
 
-    document.getElementById("skillLevel").addEventListener("change", function() {
+    document.getElementById("skillLevel").addEventListener("change", function () {
         let skillLevel_parsed = parseInt(this.value, 10);
         if (skillLevel_parsed > 20) {
             document.getElementById("skillLevel").value = 20;
@@ -356,7 +363,7 @@ document.addEventListener("DOMContentLoaded", function() {
         gameInstance.setSkillLevel(skillLevel_parsed);
     });
 
-    document.getElementById("depthLevel").addEventListener("change", function() {
+    document.getElementById("depthLevel").addEventListener("change", function () {
         let depthLevel_parsed = parseInt(this.value, 10);
         if (depthLevel_parsed > 30) {
             document.getElementById("depthLevel").value = 30;
@@ -366,7 +373,7 @@ document.addEventListener("DOMContentLoaded", function() {
         gameInstance.setDepth(depthLevel_parsed);
     });
 
-    document.getElementById("thinkingTime").addEventListener("change", function() {
+    document.getElementById("thinkingTime").addEventListener("change", function () {
         let thinkingTime_parsed = parseInt(this.value, 10);
         if (thinkingTime_parsed > 30) {
             document.getElementById("thinkingTime").value = 30;
@@ -375,59 +382,59 @@ document.addEventListener("DOMContentLoaded", function() {
         }
     });
 
-    document.getElementById("depthToggle").addEventListener("change", function() {
+    document.getElementById("depthToggle").addEventListener("change", function () {
         useDepth = true;
     });
 
-    document.getElementById("timeToggle").addEventListener("change", function() {
+    document.getElementById("timeToggle").addEventListener("change", function () {
         useDepth = false;
     });
 
-    document.getElementById("promote").addEventListener("change", function() {
+    document.getElementById("promote").addEventListener("change", function () {
         gameInstance.setPlayerColor(document.querySelector('input[name="color"]:checked').value);
     });
 
-    document.getElementById("color-white").addEventListener("change", function() {
+    document.getElementById("color-white").addEventListener("change", function () {
         gameInstance.setPlayerColor('white');
     });
 
-    document.getElementById("color-black").addEventListener("change", function() {
+    document.getElementById("color-black").addEventListener("change", function () {
         gameInstance.setPlayerColor('black');
     });
 
-    document.getElementById("newGameBtn").addEventListener("click", function() {
+    document.getElementById("newGameBtn").addEventListener("click", function () {
         gameInstance.reset();
         gameInstance.start();
     });
 
-    document.getElementById("takeBackBtn").addEventListener("click", function() {
+    document.getElementById("takeBackBtn").addEventListener("click", function () {
         gameInstance.undo();
     });
 
-    document.getElementById("flipBoardBtn").addEventListener("click", function() {
+    document.getElementById("flipBoardBtn").addEventListener("click", function () {
         gameInstance.flipBoard();
     });
 
-    document.getElementById("switchBoardBtn").addEventListener("click", function() {
+    document.getElementById("switchBoardBtn").addEventListener("click", function () {
         gameInstance.switchBoard();
     });
 
-    document.getElementById("resetGameBtn").addEventListener("click", function() {
+    document.getElementById("resetGameBtn").addEventListener("click", function () {
         gameInstance.reset();
         gameInstance.start();
     });
 
-    document.getElementById("gameMode").addEventListener("change", function() {
+    document.getElementById("gameMode").addEventListener("change", function () {
         gameInstance.setMode(this.value);
     });
 
-    document.getElementById("copyPgnBtn").addEventListener("click", function() {
+    document.getElementById("copyPgnBtn").addEventListener("click", function () {
         const pgnText = game.pgn();
         document.getElementById("pgnInput").value = pgnText;
         navigator.clipboard.writeText(pgnText);
     });
 
-    document.getElementById("copyFenBtn").addEventListener("click", function() {
+    document.getElementById("copyFenBtn").addEventListener("click", function () {
         const fenText = game.fen();
         document.getElementById("fenInput").value = fenText;
         navigator.clipboard.writeText(fenText);

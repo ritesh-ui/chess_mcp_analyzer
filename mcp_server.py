@@ -116,6 +116,7 @@ class GameSyncRequest(BaseModel):
     pgn: str
     last_move: str | None = None
     turn: str
+    player_color: str = "white"
 
 # --- HTTP Endpoints for React UI ---
 @app.get("/status")
@@ -159,6 +160,7 @@ async def game_sync(request: GameSyncRequest):
     game_context["pgn"] = request.pgn
     game_context["last_move"] = request.last_move
     game_context["turn"] = request.turn
+    game_context["player_color"] = request.player_color
     game_context["updated_at"] = datetime.datetime.utcnow().isoformat()
     
     # 2. SYNC GLOBAL BOARD (Fix for Stockfish tools)
@@ -167,7 +169,7 @@ async def game_sync(request: GameSyncRequest):
     except Exception as e:
         print(f"[Error] Failed to sync board: {e}")
 
-    print(f"[Game Sync] Move: {request.last_move} | Turn: {request.turn} | FEN: {request.fen[:40]}...")
+    print(f"[Game Sync] Move: {request.last_move} | Turn: {request.turn} | Player: {request.player_color} | FEN: {request.fen[:40]}...")
     
     # 3. TRIGGER AUTO-ANALYSIS (Optional/Background)
     if loop:
@@ -187,49 +189,55 @@ PIECE_NAMES = {
 def get_piece_name(symbol: str) -> str:
     return PIECE_NAMES.get(symbol.upper(), symbol)
 
-def get_friendly_quality_message(quality: str, cp_loss: float, eval_val: float) -> str:
+def get_friendly_quality_message(quality: str, is_player: bool, eval_val: float) -> str:
     import random
     
-    if "Blunder" in quality:
-        return random.choice([
-            "Ouch! That's a major slip-up.",
-            "Wait, you might have missed something big there.",
-            "That move just gave your opponent a huge opening.",
-            "Whew, that was a tough one. You've dropped quite a bit of ground."
-        ])
-    elif "Mistake" in quality:
-        return random.choice([
-            "That's a bit of an error, unfortunately.",
-            "You had a better option than that one.",
-            "Careful! That move makes your position harder to defend.",
-            "A small mistake, but it might hurt you later."
-        ])
-    elif "Inaccuracy" in quality:
-        return random.choice([
-            "Not the best move, but you're still in it.",
-            "A slight inaccuracy. Let's see if you can recover.",
-            "There were slightly better squares for that piece.",
-            "You're drifting a bit, but nothing fatal yet."
-        ])
-    elif "Great" in quality:
-        return random.choice([
-            "Brilliant! That's exactly what the position called for.",
-            "Excellent find! You're playing like a pro.",
-            "Wow, what a move! You've found a very strong continuation.",
-            "Fantastic! That's a high-level master move."
-        ])
-    elif "Good" in quality:
-        if eval_val > 5:
-            return "You're dominating! Just keep a clean sheet and win this."
-        elif eval_val < -5:
-            return "Tough position, but you're hanging in there. Stay focused!"
-        
-        return random.choice([
-            "Solid move. You're maintaining the pressure.",
-            "Good choice. Keeping the position stable.",
-            "That's a perfectly fine developing move.",
-            "Consistent play. Keep it up!"
-        ])
+    if is_player:
+        if "Blunder" in quality:
+            return random.choice([
+                "Ouch! That's a major slip-up.",
+                "Wait, you might have missed something big there.",
+                "You've given the engine a huge opening.",
+                "Tough move. You've dropped a lot of ground here."
+            ])
+        elif "Mistake" in quality:
+            return random.choice([
+                "That's a bit of an error, unfortunately.",
+                "You had a better option than that one.",
+                "Careful! This makes your position harder to defend.",
+                "A small mistake, but it might hurt you later."
+            ])
+        elif "Inaccuracy" in quality:
+            return random.choice([
+                "Not the best move, but you're still in it.",
+                "A slight inaccuracy. Let's see if you can recover.",
+                "There were slightly better squares for that piece.",
+                "You're drifting a bit, but nothing fatal yet."
+            ])
+        elif "Great" in quality:
+            return random.choice([
+                "Brilliant! That's exactly what the position called for.",
+                "Excellent find! You're playing like a pro.",
+                "Wow, what a move! A very strong continuation.",
+                "Fantastic! That's a high-level master move."
+            ])
+        elif "Good" in quality:
+            if eval_val > 5: return "You're dominating! Just stay clean and win this."
+            return random.choice([
+                "Solid move. You're maintaining the pressure.",
+                "Good choice. Keeping the position stable.",
+                "A perfectly fine developing move.",
+                "Consistent play. Keep it up!"
+            ])
+    else:
+        # Engine just moved
+        if "Blunder" in quality or "Mistake" in quality:
+            return "The computer made a mistake! This is your chance!"
+        elif "Inaccuracy" in quality:
+            return "The engine played a sub-optimal move. Can you capitalize?"
+        else:
+            return "The computer plays a solid move. You'll need to stay sharp."
+            
     return "The game is evolving. Let's see what happens next."
 
 async def push_auto_analysis(fen: str):
@@ -239,6 +247,13 @@ async def push_auto_analysis(fen: str):
         
     try:
         current_board = chess.Board(fen)
+        player_color = game_context.get("player_color", "white")
+        
+        # Determine who just moved
+        # If it is now BLACK's turn, WHITE just moved.
+        side_who_moved = "white" if current_board.turn == chess.BLACK else "black"
+        is_player_move = (side_who_moved == player_color)
+        
         transport, engine = await chess.engine.popen_uci(STOCKFISH_PATH)
         try:
             # 1. ANALYZE CURRENT POSITION
@@ -248,7 +263,9 @@ async def push_auto_analysis(fen: str):
             score = top_pv["score"].relative.score(mate_score=10000)
             
             # Format evaluation for display
-            eval_val = score / 100.0 if score is not None else 0
+            # Perspective of white
+            white_score = score if current_board.turn == chess.WHITE else -score
+            eval_val = white_score / 100.0 if white_score is not None else 0
             prefix = "+" if eval_val > 0 else ""
             
             # 2. CALCULATE MOVE QUALITY (CP Loss)
@@ -278,11 +295,18 @@ async def push_auto_analysis(fen: str):
             else: 
                 move_quality = "✅ Good Move"
 
-            # 3. THREAT DETECTION & OPPONENT PREDICTION
+            # 3. THREAT DETECTION & PREDICTION
             prediction = ""
-            if len(analysis) > 0:
-                best_opp_move = current_board.san(analysis[0]["pv"][0])
-                prediction = f"Opponent is likely planning <strong>{best_opp_move}</strong> next."
+            if is_player_move:
+                # User just moved, tell them what the opponent (engine) is planning
+                if len(analysis) > 0:
+                    best_opp_move = current_board.san(analysis[0]["pv"][0])
+                    prediction = f"The computer is likely planning <strong>{best_opp_move}</strong> next."
+            else:
+                # Engine just moved, tell the user what THEIR best move is
+                if len(analysis) > 0:
+                    best_user_move = current_board.san(analysis[0]["pv"][0])
+                    prediction = f"Your best response here is <strong>{best_user_move}</strong>."
             
             # 4. MATERIAL/HUNG PIECES
             if "score" in top_pv and top_pv["pv"]:
@@ -291,22 +315,30 @@ async def push_auto_analysis(fen: str):
                     captured_piece = current_board.piece_at(best_move.to_square)
                     if captured_piece:
                         p_name = get_piece_name(captured_piece.symbol())
-                        feedback = f"Heads up! Your <strong>{p_name}</strong> on {chess.square_name(best_move.to_square)} is under attack!"
+                        if is_player_move:
+                            feedback = f"Heads up! Your <strong>{p_name}</strong> on {chess.square_name(best_move.to_square)} is under attack!"
+                        else:
+                            feedback = f"Look! You can capture their <strong>{p_name}</strong> on {chess.square_name(best_move.to_square)}!"
 
             # 5. ASSEMBLE FRIENDLY MESSAGE
-            friendly_intro = get_friendly_quality_message(move_quality, cp_loss, eval_val)
+            friendly_intro = get_friendly_quality_message(move_quality, is_player_move, eval_val)
             
-            html_msg = f"<div style='margin-bottom:8px'><strong style='color:{color}; font-size:1.1em'>{move_quality}</strong> <span style='color:#6c757d'>(Eval: {prefix}{eval_val:0.2f})</span></div>"
+            # Display eval from player perspective? No, standard is white +/-. 
+            # Let's stick to white +/- but maybe add (Winning/Losing) text.
+            
+            header_text = move_quality if is_player_move else f"Engine plays: {game_context.get('last_move')}"
+            
+            html_msg = f"<div style='margin-bottom:8px'><strong style='color:{color}; font-size:1.1em'>{header_text}</strong> <span style='color:#6c757d'>(Eval: {prefix}{eval_val:0.2f})</span></div>"
             html_msg += f"<div style='margin-bottom:10px; font-style:italic; font-size:1.05em; color:#212529'>\"{friendly_intro}\"</div>"
             
             if feedback:
                 html_msg += f"<div style='margin-bottom:8px; color:#d63384'>💡 {feedback}</div>"
             
-            html_msg += f"<div style='color:#495057'>🔮 {prediction}</div>"
+            html_msg += f"<div style='color:#495057'>🎯 {prediction}</div>"
             
-            if cp_loss > 50 and "pv" in top_pv:
+            if is_player_move and cp_loss > 50 and "pv" in top_pv:
                 better_move = current_board.san(top_pv["pv"][0])
-                html_msg += f"<div style='margin-top:8px; color:#0d6efd'>🎯 A better choice would have been <strong>{better_move}</strong>.</div>"
+                html_msg += f"<div style='margin-top:8px; color:#0d6efd'>💡 A better choice would have been <strong>{better_move}</strong>.</div>"
 
             # Broadcast to GUI
             await manager.broadcast({"type": "coach_tip", "message": html_msg})
