@@ -175,6 +175,63 @@ async def game_sync(request: GameSyncRequest):
         
     return {"status": "synced"}
 
+PIECE_NAMES = {
+    "P": "Pawn",
+    "N": "Knight",
+    "B": "Bishop",
+    "R": "Rook",
+    "Q": "Queen",
+    "K": "King"
+}
+
+def get_piece_name(symbol: str) -> str:
+    return PIECE_NAMES.get(symbol.upper(), symbol)
+
+def get_friendly_quality_message(quality: str, cp_loss: float, eval_val: float) -> str:
+    import random
+    
+    if "Blunder" in quality:
+        return random.choice([
+            "Ouch! That's a major slip-up.",
+            "Wait, you might have missed something big there.",
+            "That move just gave your opponent a huge opening.",
+            "Whew, that was a tough one. You've dropped quite a bit of ground."
+        ])
+    elif "Mistake" in quality:
+        return random.choice([
+            "That's a bit of an error, unfortunately.",
+            "You had a better option than that one.",
+            "Careful! That move makes your position harder to defend.",
+            "A small mistake, but it might hurt you later."
+        ])
+    elif "Inaccuracy" in quality:
+        return random.choice([
+            "Not the best move, but you're still in it.",
+            "A slight inaccuracy. Let's see if you can recover.",
+            "There were slightly better squares for that piece.",
+            "You're drifting a bit, but nothing fatal yet."
+        ])
+    elif "Great" in quality:
+        return random.choice([
+            "Brilliant! That's exactly what the position called for.",
+            "Excellent find! You're playing like a pro.",
+            "Wow, what a move! You've found a very strong continuation.",
+            "Fantastic! That's a high-level master move."
+        ])
+    elif "Good" in quality:
+        if eval_val > 5:
+            return "You're dominating! Just keep a clean sheet and win this."
+        elif eval_val < -5:
+            return "Tough position, but you're hanging in there. Stay focused!"
+        
+        return random.choice([
+            "Solid move. You're maintaining the pressure.",
+            "Good choice. Keeping the position stable.",
+            "That's a perfectly fine developing move.",
+            "Consistent play. Keep it up!"
+        ])
+    return "The game is evolving. Let's see what happens next."
+
 async def push_auto_analysis(fen: str):
     """Performs a deep Stockfish analysis and pushes tactical coaching to the GUI."""
     if not os.path.exists(STOCKFISH_PATH):
@@ -185,7 +242,6 @@ async def push_auto_analysis(fen: str):
         transport, engine = await chess.engine.popen_uci(STOCKFISH_PATH)
         try:
             # 1. ANALYZE CURRENT POSITION
-            # Side to move here is the OPPONENT of the person who just played
             analysis = await engine.analyse(current_board, chess.engine.Limit(time=0.5), multipv=3)
             
             top_pv = analysis[0]
@@ -196,62 +252,64 @@ async def push_auto_analysis(fen: str):
             prefix = "+" if eval_val > 0 else ""
             
             # 2. CALCULATE MOVE QUALITY (CP Loss)
-            # We use the score from the PREVIOUS position to see how much was lost
             move_quality = "Good"
             cp_loss = 0
             feedback = ""
             
-            # prev_score is from the perspective of the player who just moved
-            # (stored during the last analysis)
             prev_score = game_context.get("prev_score", 0.3)
-            
-            # current_score_from_player_perspective = -score
-            # because 'score' is relative to the side now to move (the opponent)
             player_score_after = -score if score is not None else 0
             cp_loss = prev_score - player_score_after
             
-            # Update prev_score for the NEXT move (from the perspective of the side now to move)
             game_context["prev_score"] = score if score is not None else 0
             
-            if cp_loss > 300: move_quality = "🚨 **Blunder**"
-            elif cp_loss > 150: move_quality = "❓ **Mistake**"
-            elif cp_loss > 50: move_quality = "⚠️ **Inaccuracy**"
-            elif cp_loss < -50: move_quality = "✨ **Great Move**"
-            else: move_quality = "✅ **Good Move**"
+            color = "#198754" # Default Green
+            if cp_loss > 300: 
+                move_quality = "🚨 Blunder"
+                color = "#dc3545" # Red
+            elif cp_loss > 150: 
+                move_quality = "❓ Mistake"
+                color = "#fd7e14" # Orange
+            elif cp_loss > 50: 
+                move_quality = "⚠️ Inaccuracy"
+                color = "#ffc107" # Yellow
+            elif cp_loss < -50: 
+                move_quality = "✨ Great Move"
+                color = "#0dcaf0" # Cyan
+            else: 
+                move_quality = "✅ Good Move"
 
             # 3. THREAT DETECTION & OPPONENT PREDICTION
             prediction = ""
             if len(analysis) > 0:
                 best_opp_move = current_board.san(analysis[0]["pv"][0])
-                prediction = f"Opponent is likely planning **{best_opp_move}** next."
+                prediction = f"Opponent is likely planning <strong>{best_opp_move}</strong> next."
             
             # 4. MATERIAL/HUNG PIECES
-            # Simple check: is the top move a capture of a valuable piece?
             if "score" in top_pv and top_pv["pv"]:
                 best_move = top_pv["pv"][0]
                 if current_board.is_capture(best_move):
                     captured_piece = current_board.piece_at(best_move.to_square)
                     if captured_piece:
-                        feedback = f"Careful! Your **{captured_piece.symbol().upper()}** is under attack!"
+                        p_name = get_piece_name(captured_piece.symbol())
+                        feedback = f"Heads up! Your <strong>{p_name}</strong> on {chess.square_name(best_move.to_square)} is under attack!"
 
-            # 5. ASSEMBLE FINAL MESSAGE
-            status_line = f"### {move_quality} (Eval: {prefix}{eval_val:0.2f})"
-            # We don't show the technical "Loss" if it's a good move
-            if cp_loss > 100:
-                status_line += f"\nLoss: {cp_loss/100.0:0.1f} points"
-
-            msg_parts = [status_line]
-            if feedback: msg_parts.append(f"💡 {feedback}")
-            msg_parts.append(f"🔮 {prediction}")
+            # 5. ASSEMBLE FRIENDLY MESSAGE
+            friendly_intro = get_friendly_quality_message(move_quality, cp_loss, eval_val)
+            
+            html_msg = f"<div style='margin-bottom:8px'><strong style='color:{color}; font-size:1.1em'>{move_quality}</strong> <span style='color:#6c757d'>(Eval: {prefix}{eval_val:0.2f})</span></div>"
+            html_msg += f"<div style='margin-bottom:10px; font-style:italic; font-size:1.05em; color:#212529'>\"{friendly_intro}\"</div>"
+            
+            if feedback:
+                html_msg += f"<div style='margin-bottom:8px; color:#d63384'>💡 {feedback}</div>"
+            
+            html_msg += f"<div style='color:#495057'>🔮 {prediction}</div>"
             
             if cp_loss > 50 and "pv" in top_pv:
-                # Suggest a better move if they messed up
-                msg_parts.append(f"🎯 Better was: **{current_board.san(top_pv['pv'][0])}**")
+                better_move = current_board.san(top_pv["pv"][0])
+                html_msg += f"<div style='margin-top:8px; color:#0d6efd'>🎯 A better choice would have been <strong>{better_move}</strong>.</div>"
 
-            message = "\n\n".join(msg_parts)
-            
             # Broadcast to GUI
-            await manager.broadcast({"type": "coach_tip", "message": message})
+            await manager.broadcast({"type": "coach_tip", "message": html_msg})
         finally:
             await engine.quit()
     except Exception as e:

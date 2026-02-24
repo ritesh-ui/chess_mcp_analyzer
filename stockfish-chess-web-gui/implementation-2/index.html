@@ -181,20 +181,23 @@
                             </div>
                         </div>
                     </div>
-                    <div class="accordion-item">
+                    <div class="accordion-item" style="border-left: 4px solid #0d6efd;">
                         <h2 class="accordion-header" id="headingCoach">
-                            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
-                                data-bs-target="#collapseCoach" aria-expanded="false" aria-controls="collapseCoach">
-                                🤖 AI Coach
+                            <button class="accordion-button" type="button" data-bs-toggle="collapse"
+                                data-bs-target="#collapseCoach" aria-expanded="true" aria-controls="collapseCoach">
+                                <span style="font-size: 1.25rem; margin-right: 10px;">🤖</span> AI Coach
                                 <span id="coach-status" class="ms-auto small" style="color:#6c757d">○ OFFLINE</span>
                             </button>
                         </h2>
-                        <div id="collapseCoach" class="accordion-collapse collapse" aria-labelledby="headingCoach"
+                        <div id="collapseCoach" class="accordion-collapse collapse show" aria-labelledby="headingCoach"
                             data-bs-parent="#accordionOptions">
-                            <div class="accordion-body">
-                                <div id="coach-messages" class="text-muted small"
-                                    style="min-height:60px; white-space: pre-wrap;">
-                                    Waiting for Claude's coaching tip...
+                            <div class="accordion-body" style="background-color: #f8f9fa;">
+                                <div id="coach-messages"
+                                    style="min-height:80px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.5;">
+                                    <div class="text-center py-3">
+                                        <div class="spinner-border spinner-border-sm text-primary" role="status"></div>
+                                        <div class="mt-2 text-muted small">Waking up the Grandmaster...</div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
