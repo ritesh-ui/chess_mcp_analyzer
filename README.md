@@ -9,11 +9,15 @@ Grandmaster-MCP is a powerful chess coaching system that connects a local Stockf
   - `get_hint`: Context-aware tactical hints.
   - `get_best_move`: Direct best-move lookup for any FEN position.
   - `play_engine_move`: Play against Stockfish with state tracking.
+- **Integrated Chess AI Coach GUI**:
+  - A real-time chess web interface powered by Stockfish 16.
+  - Automatically syncs every move to the MCP server for analysis.
+  - Features an **AI Coach** panel where Claude pushes real-time tactical suggestions via WebSocket.
 - **Intelligence Layer**:
   - Blunder, Mistake, and Inaccuracy classification based on Centipawn loss.
   - Tactical motif detection (Check, Capture, Promotion, Back-rank threats).
 - **LLM Optimization**:
-  - Includes a custom "Grandmaster Coach" prompt template to ensure the LLM uses engine data before guessing.
+  - Includes a custom "Grandmaster Coach" prompt template to ensure the LLM uses engine data before providing feedback.
 
 ## Prerequisites
 
@@ -45,6 +49,35 @@ Grandmaster-MCP is a powerful chess coaching system that connects a local Stockf
    }
    ```
 3. Restart Claude Desktop.
+
+## Running the Application
+
+To experience the full AI-coached chess game, you need two processes running:
+
+### 1. Start the Backend (MCP Server)
+```bash
+uv run python mcp_server.py
+```
+Starts the FastAPI + WebSocket hub on `http://localhost:8000`.
+
+### 2. Start the Frontend (Chess GUI)
+```bash
+cd stockfish-chess-web-gui
+python3 -m http.server 8080
+```
+Then open **[http://localhost:8080](http://localhost:8080)** in your browser.
+
+---
+
+## How it Works
+
+1. **You play a move** in the browser GUI.
+2. **The GUI reports** the FEN, PGN, and last move to the MCP server.
+3. **You ask Claude** for a tip or analysis.
+4. **Claude calls MCP tools** to read the board state and pushes a tip back.
+5. **The tip appears instantly** in the GUI's "AI Coach" panel.
+
+---
 
 ## How to Stop or Disable the Server
 
