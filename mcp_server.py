@@ -42,10 +42,13 @@ class ConnectionManager:
         try:
             await websocket.accept()
             self.active_connections.append(websocket)
-            # Immediate sync on connect
+            print(f"[Hub] New connection: {id(websocket)}. Total: {len(self.active_connections)}")
+            # Send immediate greeting and state
+            await self.send_personal_message({"type": "coach_tip", "message": "Connection Established! AI Coach is ready."}, websocket)
             await self.send_personal_message(self.get_current_state(), websocket)
             return True
-        except Exception:
+        except Exception as e:
+            print(f"[Hub] Connection error: {e}")
             return False
 
     def disconnect(self, websocket: WebSocket):
@@ -68,12 +71,15 @@ class ConnectionManager:
             message = self.get_current_state()
         
         # Log for debugging
-        print(f"[Hub Broadcast] FEN: {message.get('fen')}")
+        print(f"[Hub Broadcast] Type: {message.get('type')} | Content: {str(message)[:100]}...")
+        print(f"[Hub Broadcast] Active connections: {len(self.active_connections)}")
         
         for connection in self.active_connections:
             try:
                 await connection.send_text(json.dumps(message))
-            except Exception:
+                print(f"[Hub Broadcast] Sent to connection: {id(connection)}")
+            except Exception as e:
+                print(f"[Hub Broadcast] Error sending to {id(connection)}: {e}")
                 # Connection might be stale, but we let disconnect handler handle it
                 pass
 
@@ -145,16 +151,65 @@ async def reset_board():
 async def game_sync(request: GameSyncRequest):
     """Called by the GUI after every move. Keeps server in sync with GUI game state."""
     import datetime
+    global board
+    
+    # 1. Update context for Claude
     game_context["fen"] = request.fen
     game_context["pgn"] = request.pgn
     game_context["last_move"] = request.last_move
     game_context["turn"] = request.turn
     game_context["updated_at"] = datetime.datetime.utcnow().isoformat()
+    
+    # 2. SYNC GLOBAL BOARD (Fix for Stockfish tools)
+    try:
+        board = chess.Board(request.fen)
+    except Exception as e:
+        print(f"[Error] Failed to sync board: {e}")
+
     print(f"[Game Sync] Move: {request.last_move} | Turn: {request.turn} | FEN: {request.fen[:40]}...")
+    
+    # 3. TRIGGER AUTO-ANALYSIS (Optional/Background)
+    if loop:
+        asyncio.run_coroutine_threadsafe(push_auto_analysis(request.fen), loop)
+        
     return {"status": "synced"}
 
+async def push_auto_analysis(fen: str):
+    """Performs a quick Stockfish analysis and pushes the tip to the GUI."""
+    if not os.path.exists(STOCKFISH_PATH):
+        return
+        
+    try:
+        # We use a temporary board for analysis to be safe
+        analysis_board = chess.Board(fen)
+        transport, engine = await chess.engine.popen_uci(STOCKFISH_PATH)
+        try:
+            # Quick 0.2s analysis for 'live' feel
+            analysis = await engine.analyse(analysis_board, chess.engine.Limit(time=0.2))
+            score = analysis["score"].relative.score(mate_score=10000)
+            
+            # Format evaluation
+            eval_val = score / 100.0 if score is not None else 0
+            prefix = "+" if eval_val > 0 else ""
+            
+            # Basic coaching summary
+            feedback = "Position is balanced."
+            if score > 150: feedback = "White has a significant advantage."
+            elif score > 50: feedback = "White is slightly better."
+            elif score < -150: feedback = "Black has a significant advantage."
+            elif score < -50: feedback = "Black is slightly better."
+            
+            message = f"**Engine Eval: {prefix}{eval_val:0.2f}**\n{feedback}"
+            
+            # Broadcast to GUI
+            await manager.broadcast({"type": "coach_tip", "message": message})
+        finally:
+            await engine.quit()
+    except Exception as e:
+        print(f"[Auto-Analysis Error] {e}")
+
 @app.get("/game/status")
-async def game_status():
+async def get_game_status():
     """Returns the current game context."""
     return game_context
 
@@ -194,9 +249,15 @@ async def get_game_context() -> str:
 @mcp.tool()
 async def push_coaching_tip(message: str) -> str:
     """Pushes a coaching tip or analysis message to the Chess AI Coach GUI in real-time via WebSocket."""
+    if loop is None:
+        return "Error: WebSocket Hub event loop is not initialized yet."
+    
     payload = {"type": "coach_tip", "message": message}
-    asyncio.run_coroutine_threadsafe(manager.broadcast(payload), loop)
-    return f"Coaching tip sent to GUI: {message[:80]}..."
+    try:
+        asyncio.run_coroutine_threadsafe(manager.broadcast(payload), loop)
+        return f"Coaching tip sent to GUI: {message[:80]}..."
+    except Exception as e:
+        return f"Error broadcasting tip: {e}"
 
 @mcp.tool()
 async def play_engine_move() -> str:
@@ -219,22 +280,40 @@ async def play_engine_move() -> str:
 
 # --- Hybrid Orchestration ---
 loop = None
+hub_thread = None
 
 def start_http_hub():
     global loop
+    # Create a new event loop for this thread
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+    
     config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="error")
     server = uvicorn.Server(config)
+    
+    # Run the server until the loop is closed
     loop.run_until_complete(server.serve())
 
+def ensure_hub_started():
+    global hub_thread
+    if hub_thread is None or not hub_thread.is_alive():
+        print("[System] Starting WebSocket Hub thread...")
+        hub_thread = threading.Thread(target=start_http_hub, name="HubThread", daemon=True)
+        hub_thread.start()
+        # Give the thread a moment to initialize the loop
+        import time
+        max_wait = 5
+        start_time = time.time()
+        while loop is None and (time.time() - start_time) < max_wait:
+            time.sleep(0.1)
+        if loop is None:
+            print("[Warning] Hub loop failed to initialize in time.")
+        else:
+            print("[System] WebSocket Hub is ready.")
+
+# Initialize Hub on import so it works with 'fastmcp dev'
+ensure_hub_started()
+
 if __name__ == "__main__":
-    # 1. Start HTTP/WS Hub in background thread with its own loop
-    threading.Thread(target=start_http_hub, daemon=True).start()
-    
-    # Give the thread a moment to initialize the loop
-    import time
-    time.sleep(1)
-    
-    # 2. Start MCP Server (Stdio)
+    # Start MCP Server (Stdio)
     mcp.run()
