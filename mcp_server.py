@@ -24,6 +24,15 @@ STOCKFISH_PATH = shutil.which("stockfish") or "/opt/homebrew/bin/stockfish"
 # --- Global State Hub ---
 board = chess.Board()
 
+# Game context populated by the GUI after every move
+game_context = {
+    "fen": chess.STARTING_FEN,
+    "pgn": "",
+    "last_move": None,
+    "turn": "white",
+    "updated_at": None
+}
+
 # --- Connection Manager ---
 class ConnectionManager:
     def __init__(self):
@@ -95,6 +104,12 @@ async def websocket_endpoint(websocket: WebSocket):
 class MoveRequest(BaseModel):
     move: str
 
+class GameSyncRequest(BaseModel):
+    fen: str
+    pgn: str
+    last_move: str | None = None
+    turn: str
+
 # --- HTTP Endpoints for React UI ---
 @app.get("/status")
 async def get_status():
@@ -126,6 +141,23 @@ async def reset_board():
     asyncio.run_coroutine_threadsafe(manager.broadcast(), loop)
     return {"status": "reset", "fen": board.fen()}
 
+@app.post("/game/sync")
+async def game_sync(request: GameSyncRequest):
+    """Called by the GUI after every move. Keeps server in sync with GUI game state."""
+    import datetime
+    game_context["fen"] = request.fen
+    game_context["pgn"] = request.pgn
+    game_context["last_move"] = request.last_move
+    game_context["turn"] = request.turn
+    game_context["updated_at"] = datetime.datetime.utcnow().isoformat()
+    print(f"[Game Sync] Move: {request.last_move} | Turn: {request.turn} | FEN: {request.fen[:40]}...")
+    return {"status": "synced"}
+
+@app.get("/game/status")
+async def game_status():
+    """Returns the current game context."""
+    return game_context
+
 # --- MCP Tools for Claude ---
 @mcp.tool()
 async def get_board_analysis() -> str:
@@ -145,6 +177,26 @@ async def get_board_analysis() -> str:
         return f"FEN: {board.fen()}\nEvaluation: {score/100.0}\nAnalysis: {feedback}"
     finally:
         await engine.quit()
+
+@mcp.tool()
+async def get_game_context() -> str:
+    """Returns the current chess game state: FEN, PGN, last move, and whose turn it is."""
+    if not game_context["pgn"] and game_context["fen"] == chess.STARTING_FEN:
+        return "No game in progress. The board is at the starting position."
+    return (
+        f"Current FEN: {game_context['fen']}\n"
+        f"PGN so far: {game_context['pgn']}\n"
+        f"Last Move: {game_context['last_move']}\n"
+        f"Turn: {game_context['turn']}\n"
+        f"Updated at: {game_context['updated_at']}"
+    )
+
+@mcp.tool()
+async def push_coaching_tip(message: str) -> str:
+    """Pushes a coaching tip or analysis message to the Chess AI Coach GUI in real-time via WebSocket."""
+    payload = {"type": "coach_tip", "message": message}
+    asyncio.run_coroutine_threadsafe(manager.broadcast(payload), loop)
+    return f"Coaching tip sent to GUI: {message[:80]}..."
 
 @mcp.tool()
 async def play_engine_move() -> str:

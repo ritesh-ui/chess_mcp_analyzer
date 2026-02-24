@@ -3,6 +3,47 @@ document.addEventListener("DOMContentLoaded", function() {
     let useDepth = true;
     let currentMode = 'Player vs Engine';
     let board;
+    const MCP_SERVER = 'http://localhost:8000';
+    const WS_URL = 'ws://localhost:8000/ws';
+    let coachSocket = null;
+
+    // --- Coach WebSocket (server -> GUI push) ---
+    function connectCoachSocket() {
+        coachSocket = new WebSocket(WS_URL);
+        coachSocket.onopen = () => {
+            document.getElementById('coach-status').textContent = '● LIVE';
+            document.getElementById('coach-status').style.color = '#198754';
+        };
+        coachSocket.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                if (data.type === 'coach_tip') {
+                    const panel = document.getElementById('coach-messages');
+                    const time = new Date().toLocaleTimeString();
+                    panel.innerHTML = `<p style="margin:0">${data.message}</p><small class="text-muted">Updated: ${time}</small>`;
+                    // Auto-expand the AI Coach accordion
+                    const coachCollapse = document.getElementById('collapseCoach');
+                    if (coachCollapse && !coachCollapse.classList.contains('show')) {
+                        new bootstrap.Collapse(coachCollapse, { toggle: true });
+                    }
+                }
+            } catch(e) { console.error('Coach WS error:', e); }
+        };
+        coachSocket.onclose = () => {
+            document.getElementById('coach-status').textContent = '○ OFFLINE';
+            document.getElementById('coach-status').style.color = '#6c757d';
+            setTimeout(connectCoachSocket, 3000);
+        };
+    }
+
+    // --- Report move to MCP server ---
+    function reportToCoach(fen, pgn, lastMove, turn) {
+        fetch(`${MCP_SERVER}/game/sync`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fen, pgn, last_move: lastMove, turn })
+        }).catch(err => console.warn('MCP sync failed (server offline?):', err));
+    }
 
     function engineGame(options) {
         options = options || {};
@@ -93,6 +134,15 @@ document.addEventListener("DOMContentLoaded", function() {
             document.getElementById("pgnInput").value = game.pgn();
             document.getElementById("fenInput").value = game.fen();
             board.position(game.fen());
+
+            // --- Report to MCP Coach ---
+            const history = game.history({ verbose: true });
+            const lastMove = history.length > 0
+                ? history[history.length - 1].from + history[history.length - 1].to
+                : null;
+            const turn = game.turn() === 'w' ? 'white' : 'black';
+            reportToCoach(game.fen(), game.pgn(), lastMove, turn);
+
             if (currentMode === 'Player vs Engine') {
                 let turn = game.turn() == 'w' ? 'white' : 'black';
                 if (!game.game_over() && turn != playerColor) {
@@ -282,6 +332,9 @@ document.addEventListener("DOMContentLoaded", function() {
     }
 
     let gameInstance = engineGame();
+
+    // Connect coach WebSocket after game is initialised
+    connectCoachSocket();
 
     function adjustScoreBarHeight() {
         const boardElement = document.getElementById('board');
