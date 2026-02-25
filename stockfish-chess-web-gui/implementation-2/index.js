@@ -35,7 +35,12 @@ document.addEventListener("DOMContentLoaded", function () {
                 if (data.type === 'coach_tip') {
                     const panel = document.getElementById('coach-messages');
                     const time = new Date().toLocaleTimeString();
-                    panel.innerHTML = `<p style="margin:0">${data.message}</p><small class="text-muted">Updated: ${time}</small>`;
+                    panel.innerHTML = `
+                        <div class="chat-bubble bubble-coach shadow-sm w-100">
+                            <p style="margin:0">${data.message}</p>
+                            <div class="text-end mt-1" style="font-size: 0.7rem; opacity: 0.6;">${time}</div>
+                        </div>
+                    `;
 
                     removeHighlights();
 
@@ -154,10 +159,14 @@ document.addEventListener("DOMContentLoaded", function () {
                     lessonsList.innerHTML = '';
 
                     data.lessons.forEach(lesson => {
-                        const li = document.createElement('li');
-                        li.className = 'list-group-item bg-transparent border-0 py-1';
-                        li.innerHTML = `✅ ${lesson}`;
-                        lessonsList.appendChild(li);
+                        const div = document.createElement('div');
+                        div.className = 'mb-2 p-2 rounded';
+                        div.style.background = 'rgba(16, 185, 129, 0.1)';
+                        div.style.border = '1px solid rgba(16, 185, 129, 0.2)';
+                        div.style.color = '#d1fae5';
+                        div.style.fontSize = '0.9rem';
+                        div.innerHTML = `✅ ${lesson}`;
+                        lessonsList.appendChild(div);
                     });
 
                     if (data.blunder) {
@@ -401,7 +410,7 @@ document.addEventListener("DOMContentLoaded", function () {
         if (!question) return;
 
         const userMsg = document.createElement('div');
-        userMsg.style = "align-self: flex-end; background: #e7f3ff; padding: 8px 12px; border-radius: 12px 12px 0 12px; margin-bottom:8px; border: 1px solid #cce5ff;";
+        userMsg.className = "chat-bubble bubble-user shadow-sm";
         userMsg.innerHTML = `<strong>You:</strong> ${question}`;
         history.appendChild(userMsg);
         input.value = '';
@@ -414,7 +423,7 @@ document.addEventListener("DOMContentLoaded", function () {
             });
             const data = await response.json();
             const coachMsg = document.createElement('div');
-            coachMsg.style = "align-self: flex-start; background: #fff; padding: 8px 12px; border-radius: 12px 12px 12px 0; margin-bottom:8px; border: 1px solid #dee2e6;";
+            coachMsg.className = "chat-bubble bubble-coach shadow-sm";
             coachMsg.innerHTML = `<strong>Coach:</strong> ${data.response}`;
             history.appendChild(coachMsg);
         } catch (err) { console.error(err); }

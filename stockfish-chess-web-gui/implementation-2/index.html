@@ -11,55 +11,102 @@
     <script src="./js/bootstrap.min.js"></script>
     <script src="./js/chessboard-1.0.0.min.js"></script>
     <script src="./js/chess.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
+        :root {
+            --bg-dark: #0f172a;
+            --bg-darker: #020617;
+            --accent-primary: #6366f1;
+            --accent-secondary: #4f46e5;
+            --glass-bg: rgba(255, 255, 255, 0.03);
+            --glass-border: rgba(255, 255, 255, 0.1);
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+        }
+
+        body {
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background: radial-gradient(circle at top, var(--bg-dark) 0%, var(--bg-darker) 100%);
+            color: var(--text-main);
+            min-height: 100vh;
+            margin: 0;
+            line-height: 1.6;
+        }
+
+        h1,
+        h2,
+        h3,
+        h4,
+        h5,
+        h6 {
+            font-weight: 700;
+            letter-spacing: -0.025em;
+        }
+
         #board {
             max-width: 600px;
             position: relative;
         }
 
         .settings-accordion {
-            max-width: 400px;
-            margin-top: -1.25rem;
-            /* Align the top of the accordion with the top of the chessboard */
+            max-width: 420px;
         }
 
         .full-width-bar {
-            width: 80%;
-            background-color: #f8f9fa;
+            width: 100%;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            padding: 12px;
+            margin-top: 15px;
+            text-align: center;
         }
 
         #score-bar-container {
             position: absolute;
             left: 75px;
             top: 0;
-            width: 10px;
+            width: 6px;
             height: 100%;
-            background-color: #3b4252ff;
+            background-color: rgba(255, 255, 255, 0.05);
+            border-radius: 3px;
+            overflow: hidden;
+            box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.5);
         }
 
         #score-bar {
             position: absolute;
             bottom: 0;
             width: 100%;
-            background-color: #d8dee9ff;
+            background: linear-gradient(to top, var(--accent-primary), #818cf8);
+            box-shadow: 0 0 15px rgba(99, 102, 241, 0.5);
+            transition: height 0.5s cubic-bezier(0.4, 0, 0.2, 1);
         }
 
         .button-container {
-            display: flex;
-            justify-content: space-between;
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
             width: 100%;
             max-width: 600px;
-            /* Ensure buttons do not surpass the width of the board */
+            margin-top: 24px;
         }
 
-        .button-container .btn {
-            flex: 1;
-            margin: 0 5px;
+        .btn {
+            font-weight: 600;
+            border-radius: 8px;
+            padding: 10px 16px;
+            transition: all 0.2s ease;
+            border: 1px solid transparent;
         }
 
-        .button-container.second-row .btn {
-            margin-top: 10px;
-            /* Space between button rows */
+        .btn-primary {
+            background: var(--accent-primary);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        }
+
+        .btn-primary:hover {
+            background: var(--accent-secondary);
+            transform: translateY(-1px);
         }
 
         /* Heatmap Glows */
@@ -75,11 +122,27 @@
 
         /* Glassmorphism utility */
         .glass-style {
-            background: rgba(255, 255, 255, 0.7) !important;
-            backdrop-filter: blur(12px) saturate(180%);
-            -webkit-backdrop-filter: blur(12px) saturate(180%);
-            border: 1px solid rgba(209, 213, 219, 0.3);
-            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.07);
+            background: var(--glass-bg) !important;
+            backdrop-filter: blur(16px) saturate(180%);
+            -webkit-backdrop-filter: blur(16px) saturate(180%);
+            border: 1px solid var(--glass-border) !important;
+            box-shadow: 0 4px 32px 0 rgba(0, 0, 0, 0.2);
+            color: var(--text-main) !important;
+        }
+
+        .accordion-item.glass-style {
+            margin-bottom: 12px;
+            border-radius: 12px !important;
+            overflow: hidden;
+        }
+
+        .accordion-button.glass-style {
+            color: var(--text-main) !important;
+            font-weight: 600;
+        }
+
+        .accordion-button::after {
+            filter: invert(1);
         }
 
         /* Brilliant Move "Ignite" Effect */
@@ -101,16 +164,42 @@
             animation: ignite-cyan 1.5s ease-out;
             z-index: 100;
         }
+
+        /* Coach Chat Bubbles */
+        .chat-bubble {
+            border-radius: 12px;
+            padding: 10px 14px;
+            margin-bottom: 10px;
+            font-size: 0.95rem;
+            max-width: 90%;
+        }
+
+        .bubble-coach {
+            background: rgba(99, 102, 241, 0.15);
+            border: 1px solid rgba(99, 102, 241, 0.3);
+            color: #c7d2fe;
+            margin-right: auto;
+        }
+
+        .bubble-user {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: #f1f5f9;
+            margin-left: auto;
+            text-align: right;
+        }
     </style>
-    <div class="container">
-        <img src="img/favicon/favicon.svg" width="80" height="80" class="d-block mx-auto mb-3">
-        <h1 class="text-center">♟ Chess AI Coach</h1>
+    <div class="container py-4">
+        <h1 class="text-center mb-0" style="display: flex; align-items: center; justify-content: center; gap: 15px;">
+            <img src="img/favicon/favicon.svg" width="48" height="48">
+            Chess AI Workstation
+        </h1>
+        <p class="text-center text-muted mt-2">Professional Strategy & Mentoring powered by Grandmaster AI</p>
     </div>
 </head>
 
 <body>
-    <div class="container">
-        <h3 class="text-center my-4">Play Chess · AI-Coached by Claude via MCP</h3>
+    <div class="container pb-5">
         <div class="row justify-content-center">
             <div class="col-12 col-md-7 d-flex flex-column align-items-center mb-4 position-relative">
                 <div id="score-bar-container">
@@ -193,108 +282,124 @@
                             </div>
                         </div>
                     </div>
-                    <div class="accordion-item">
+                    <div class="accordion-item glass-style">
                         <h2 class="accordion-header" id="headingThree">
-                            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
-                                data-bs-target="#collapseThree" aria-expanded="false"
+                            <button class="accordion-button collapsed glass-style" type="button"
+                                data-bs-toggle="collapse" data-bs-target="#collapseThree" aria-expanded="false"
                                 aria-controls="collapseThree">Moves</button>
                         </h2>
                         <div id="collapseThree" class="accordion-collapse collapse" aria-labelledby="headingThree"
                             data-bs-parent="#accordionOptions">
-                            <div class="accordion-body">
-                                <h4>List Of Moves:</h4>
-                                <div id="pgn"></div>
+                            <div class="accordion-body" style="background: transparent;">
+                                <h6 class="mb-3 opacity-75"
+                                    style="font-size: 0.8rem; text-transform: uppercase; font-weight: 700;">Game Log
+                                </h6>
+                                <div id="pgn" class="p-2 rounded"
+                                    style="background: rgba(0,0,0,0.1); font-family: 'Inter', monospace; font-size: 0.85rem;">
+                                </div>
                             </div>
                         </div>
                     </div>
-                    <div class="accordion-item">
+                    <div class="accordion-item glass-style">
                         <h2 class="accordion-header" id="headingFour">
-                            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
-                                data-bs-target="#collapseFour" aria-expanded="false"
+                            <button class="accordion-button collapsed glass-style" type="button"
+                                data-bs-toggle="collapse" data-bs-target="#collapseFour" aria-expanded="false"
                                 aria-controls="collapseFour">Classical Evaluation</button>
                         </h2>
                         <div id="collapseFour" class="accordion-collapse collapse" aria-labelledby="headingFour"
                             data-bs-parent="#accordionOptions">
-                            <div class="accordion-body">
-                                <h4>Evaluation:</h4>
-                                <pre id="evaluation"></pre>
+                            <div class="accordion-body" style="background: transparent;">
+                                <h6 class="mb-3 opacity-75"
+                                    style="font-size: 0.8rem; text-transform: uppercase; font-weight: 700;">Engine
+                                    Perspective</h6>
+                                <pre id="evaluation" class="p-2 rounded"
+                                    style="background: rgba(0,0,0,0.1); color: var(--text-muted); font-size: 0.85rem; border: 1px solid var(--glass-border);"></pre>
                             </div>
                         </div>
                     </div>
-                    <div class="accordion-item glass-style" style="border-left: 4px solid #0d6efd;">
+                    <div class="accordion-item glass-style"
+                        style="border-left: 4px solid var(--accent-primary) !important;">
                         <h2 class="accordion-header" id="headingCoach">
                             <button class="accordion-button glass-style" type="button" data-bs-toggle="collapse"
                                 data-bs-target="#collapseCoach" aria-expanded="true" aria-controls="collapseCoach">
-                                <span style="font-size: 1.25rem; margin-right: 10px;">🤖</span> AI Coach
-                                <span id="coach-status" class="ms-auto small" style="color:#6c757d">○ OFFLINE</span>
+                                <span style="font-size: 1.25rem; margin-right: 12px;">🎙️</span> Live AI Coach
+                                <span id="coach-status" class="ms-auto small badge rounded-pill bg-success"
+                                    style="font-size: 0.7rem; letter-spacing: 0.05em;">LIVE</span>
                             </button>
                         </h2>
                         <div id="collapseCoach" class="accordion-collapse collapse show" aria-labelledby="headingCoach"
                             data-bs-parent="#accordionOptions">
-                            <div class="accordion-body" style="background-color: #f8f9fa;">
-                                <div id="coach-messages"
-                                    style="min-height:80px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.5;">
-                                    <div class="text-center py-3">
-                                        <div class="spinner-border spinner-border-sm text-primary" role="status"></div>
-                                        <div class="mt-2 text-muted small">Waking up the Grandmaster...</div>
+                            <div class="accordion-body" style="background: transparent;">
+                                <div id="coach-messages" style="min-height:80px; line-height: 1.5;">
+                                    <div class="text-center py-4">
+                                        <div class="spinner-border spinner-border-sm text-indigo" role="status"></div>
+                                        <div class="mt-2 text-muted small">Grandmaster thinking...</div>
                                     </div>
                                 </div>
 
                                 <!-- Chat Interface -->
-                                <div class="mt-3 border-top pt-3" id="coach-chat-container">
-                                    <h6 class="text-primary mb-2" style="font-size: 0.9rem;">💬 Ask your Coach</h6>
-                                    <div id="coach-chat-history" class="mb-3"
-                                        style="max-height: 250px; overflow-y: auto; font-size: 0.9rem; padding: 10px; background: white; border-radius: 8px; border: 1px solid #dee2e6;">
-                                        <div class="text-muted small text-center italic">Type a question below to start
-                                            a conversation...</div>
+                                <div class="mt-4 border-top border-secondary pt-3" id="coach-chat-container">
+                                    <div class="d-flex align-items-center mb-3">
+                                        <h6 class="mb-0 text-indigo opacity-75"
+                                            style="font-size: 0.85rem; text-transform: uppercase; font-weight: 700;">
+                                            Conversation</h6>
                                     </div>
-                                    <div class="input-group input-group-sm">
-                                        <input type="text" id="coach-chat-input" class="form-control"
-                                            placeholder="e.g. Why is this position better?">
-                                        <button class="btn btn-primary px-3" type="button"
-                                            id="coach-chat-send">Ask</button>
+                                    <div id="coach-chat-history" class="mb-3"
+                                        style="max-height: 300px; overflow-y: auto; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 12px; border: 1px solid var(--glass-border);">
+                                        <div class="text-muted small text-center italic opacity-50">State your query...
+                                        </div>
+                                    </div>
+                                    <div class="input-group">
+                                        <input type="text" id="coach-chat-input" class="form-control glass-style"
+                                            placeholder="Ask about the position..." style="border-radius: 8px 0 0 8px;">
+                                        <button class="btn btn-primary px-4" type="button"
+                                            id="coach-chat-send">Send</button>
                                     </div>
                                 </div>
                             </div>
                         </div>
                     </div>
                 </div>
-                <div class="accordion-item">
+                <div class="accordion-item glass-style">
                     <h2 class="accordion-header" id="headingFive">
-                        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
+                        <button class="accordion-button collapsed glass-style" type="button" data-bs-toggle="collapse"
                             data-bs-target="#collapseFive" aria-expanded="false" aria-controls="collapseFive">Engine
                             Analysis</button>
                     </h2>
                     <div id="collapseFive" class="accordion-collapse collapse" aria-labelledby="headingFive"
                         data-bs-parent="#accordionOptions">
-                        <div class="accordion-body">
-                            <div id="engineAnalysis" class="text-center"></div>
+                        <div class="accordion-body" style="background: transparent;">
+                            <div id="engineAnalysis" class="text-center p-2 rounded"
+                                style="background: rgba(0,0,0,0.1); border: 1px solid var(--glass-border);"></div>
                         </div>
                     </div>
                 </div>
                 <div class="accordion-item glass-style" id="review-accordion-item"
-                    style="display: none; border: 4px solid #198754;">
+                    style="display: none; border-left: 4px solid #10b981 !important;">
                     <h2 class="accordion-header" id="headingReview">
                         <button class="accordion-button glass-style" type="button" data-bs-toggle="collapse"
                             data-bs-target="#collapseReview" aria-expanded="true" aria-controls="collapseReview">
-                            <span style="font-size: 1.25rem; margin-right: 10px;">🏆</span> Post-Game Review
+                            <span style="font-size: 1.25rem; margin-right: 12px;">🏆</span> Post-Game Intelligence
                         </button>
                     </h2>
                     <div id="collapseReview" class="accordion-collapse collapse show" aria-labelledby="headingReview"
                         data-bs-parent="#accordionOptions">
-                        <div class="accordion-body" style="background-color: #f0fff4;">
-                            <h5 class="text-success">🎓 Top 3 Lessons</h5>
-                            <ul id="review-lessons" class="list-group list-group-flush mb-3"
-                                style="font-size: 0.95rem;">
+                        <div class="accordion-body" style="background: transparent;">
+                            <h6 class="text-success mb-3"
+                                style="text-transform: uppercase; font-weight: 700; font-size: 0.8rem;">Strategic
+                                Lessons</h6>
+                            <div id="review-lessons" class="mb-3">
                                 <!-- Lessons will be injected here -->
-                            </ul>
+                            </div>
 
-                            <div id="blunder-drill-container" class="border-top pt-3">
-                                <h5 class="text-danger">🚨 Blunder Drill</h5>
-                                <p id="blunder-message" class="small text-muted mb-2">You made a critical mistake in
-                                    this game. Ready to fix it?</p>
-                                <button type="button" class="btn btn-danger w-100" id="startDrillBtn">Start Blunder
-                                    Drill</button>
+                            <div id="blunder-drill-container" class="border-top border-success border-opacity-25 pt-4">
+                                <h6 class="text-danger mb-3"
+                                    style="text-transform: uppercase; font-weight: 700; font-size: 0.8rem;">Blunder
+                                    Replay</h6>
+                                <p id="blunder-message" class="small text-muted mb-3">Analyze and correct your critical
+                                    deviation.</p>
+                                <button type="button" class="btn btn-danger w-100 py-3" id="startDrillBtn">Start
+                                    Corrections</button>
                             </div>
                         </div>
                     </div>
@@ -302,21 +407,29 @@
                 <div class="accordion-item glass-style">
                     <h2 class="accordion-header" id="headingSix">
                         <button class="accordion-button collapsed glass-style" type="button" data-bs-toggle="collapse"
-                            data-bs-target="#collapseSix" aria-expanded="false" aria-controls="collapseSix">PGN &
-                            FEN</button>
+                            data-bs-target="#collapseSix" aria-expanded="false" aria-controls="collapseSix">Data Export
+                            (PGN/FEN)</button>
                     </h2>
                     <div id="collapseSix" class="accordion-collapse collapse" aria-labelledby="headingSix"
                         data-bs-parent="#accordionOptions">
-                        <div class="accordion-body">
-                            <div class="mb-3">
-                                <label for="pgnInput" class="form-label">PGN</label>
-                                <textarea class="form-control" id="pgnInput" rows="3"></textarea>
-                                <button type="button" class="btn btn-primary mt-2" id="copyPgnBtn">Copy PGN</button>
+                        <div class="accordion-body" style="background: transparent;">
+                            <div class="mb-4">
+                                <h6 class="mb-2 opacity-75"
+                                    style="font-size: 0.75rem; text-transform: uppercase; font-weight: 700;">PGN Stream
+                                </h6>
+                                <textarea class="form-control glass-style" id="pgnInput" rows="3"
+                                    style="font-family: monospace; font-size: 0.8rem;"></textarea>
+                                <button type="button" class="btn btn-outline-light btn-sm mt-2 w-100"
+                                    id="copyPgnBtn">Copy PGN</button>
                             </div>
-                            <div class="mb-3">
-                                <label for="fenInput" class="form-label">FEN</label>
-                                <textarea class="form-control" id="fenInput" rows="2"></textarea>
-                                <button type="button" class="btn btn-primary mt-2" id="copyFenBtn">Copy FEN</button>
+                            <div class="mb-2">
+                                <h6 class="mb-2 opacity-75"
+                                    style="font-size: 0.75rem; text-transform: uppercase; font-weight: 700;">FEN State
+                                </h6>
+                                <textarea class="form-control glass-style" id="fenInput" rows="2"
+                                    style="font-family: monospace; font-size: 0.8rem;"></textarea>
+                                <button type="button" class="btn btn-outline-light btn-sm mt-2 w-100"
+                                    id="copyFenBtn">Copy FEN</button>
                             </div>
                         </div>
                     </div>
