@@ -376,6 +376,11 @@ document.addEventListener("DOMContentLoaded", function () {
             setMode: function (mode) {
                 currentMode = mode;
                 displayStatus();
+            },
+            stop: function () {
+                uciCmd('stop');
+                uciCmd('stop', evaler);
+                isEngineRunning = false;
             }
         };
     }
@@ -394,14 +399,18 @@ document.addEventListener("DOMContentLoaded", function () {
     window.addEventListener('resize', adjustScoreBarHeight);
 
     document.getElementById("newGameBtn").addEventListener("click", () => {
+        gameInstance.stop();
         gameInstance.reset();
         gameInstance.start();
         clearAIChat();
+        fetch(`${MCP_SERVER}/reset`, { method: 'POST' }).catch(e => console.error("Backend reset failed:", e));
     });
     document.getElementById("resetGameBtn").addEventListener("click", () => {
+        gameInstance.stop();
         gameInstance.reset();
         gameInstance.start();
         clearAIChat();
+        fetch(`${MCP_SERVER}/reset`, { method: 'POST' }).catch(e => console.error("Backend reset failed:", e));
     });
 
     function clearAIChat() {

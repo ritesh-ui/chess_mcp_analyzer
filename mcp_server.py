@@ -291,6 +291,7 @@ async def game_review():
 
 @app.post("/reset")
 async def reset_board():
+    global board
     board.reset()
     # Reset internal coaching memory
     game_context["prev_score"] = 0.3
@@ -299,8 +300,22 @@ async def reset_board():
     game_context["analysis_history"] = []
     game_context["active_challenge"] = None
     game_context["hot_squares"] = []
-    # BROADCAST CHANGE
-    asyncio.run_coroutine_threadsafe(manager.broadcast(), loop)
+    game_context["last_move_quality"] = "Good"
+    game_context["last_critical_tip_time"] = 0
+    
+    # BROADCAST CHANGE to clear highlights on frontend
+    if loop:
+        asyncio.run_coroutine_threadsafe(
+            manager.broadcast({
+                "type": "coach_tip",
+                "message": "<div class='text-center py-2 opacity-50 small'>Board re-initialized. Ready for new game.</div>",
+                "hot_squares": [],
+                "challenge": None
+            }), 
+            loop
+        )
+    
+    print("[System] Full backend reset completed.")
     return {"status": "reset", "fen": board.fen()}
 
 @app.post("/game/sync")
