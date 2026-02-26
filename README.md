@@ -4,7 +4,7 @@ Grandmaster-MCP is an advanced chess intelligence system that bridges the gap be
 
 ## 📺 Demonstration
 
-![Chess AI Workstation Demo](file:///Users/riteshsingh/.gemini/antigravity/brain/f2835e11-94a3-4038-97ae-3a3a226dad2d/ui_refinements_verify_retry2_1772009240801.webp)
+![Chess AI Workstation Demo](./assets/demo.webp)
 
 ## 🏗 Architecture
 
