@@ -202,8 +202,8 @@ async def coach_query(request: CoachQuery):
     system_prompt = (
         "You are 'The Grandmaster Coach', a world-class chess mentor. "
         "Your goal is to explain chess concepts in a human, encouraging, and clear way. "
+        "Keep your response extremely concise, crisp, and direct (under 50 words). "
         "Avoid raw engine jargon or deep variations unless specifically asked. "
-        "Speak like a mentor who wants the student to improve their general understanding. "
         f"You are coaching the {request.player_color} player."
     )
     
@@ -216,13 +216,17 @@ async def coach_query(request: CoachQuery):
     )
 
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_context}
-            ],
-            temperature=0.7
+        response = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_context}
+                ],
+                max_tokens=150,
+                temperature=0.7
+            )
         )
         return {"response": response.choices[0].message.content}
     except Exception as e:

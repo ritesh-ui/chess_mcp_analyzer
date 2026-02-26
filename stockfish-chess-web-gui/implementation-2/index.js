@@ -441,6 +441,14 @@ document.addEventListener("DOMContentLoaded", function () {
         history.appendChild(userMsg);
         input.value = '';
 
+        // Add loading indicator
+        const loadingMsg = document.createElement('div');
+        loadingMsg.className = "chat-bubble bubble-coach shadow-sm";
+        loadingMsg.id = "coach-loading-bubble";
+        loadingMsg.innerHTML = `<strong>Coach:</strong> <span class="spinner-border spinner-border-sm text-secondary" role="status" aria-hidden="true" style="margin-left:5px; margin-right:5px"></span> <em>Thinking...</em>`;
+        history.appendChild(loadingMsg);
+        history.scrollTop = history.scrollHeight;
+
         try {
             // Existing fetch for coach query
             const response = await fetch(`${MCP_SERVER}/coach/query`, {
@@ -449,6 +457,11 @@ document.addEventListener("DOMContentLoaded", function () {
                 body: JSON.stringify({ fen: game.fen(), pgn: game.pgn(), question: question, player_color: playerColor })
             });
             const data = await response.json();
+
+            // Remove loading indicator
+            const loader = document.getElementById("coach-loading-bubble");
+            if (loader) loader.remove();
+
             const coachMsg = document.createElement('div');
             coachMsg.className = "chat-bubble bubble-coach shadow-sm";
             coachMsg.innerHTML = `<strong>Coach:</strong> ${data.response}`;
