@@ -36,3 +36,7 @@ stockfish-chess-web-gui/node_modules/
 # Misc
 *.sqlite
 *.db
+
+# Environment secrets
+.env
+.env.local
