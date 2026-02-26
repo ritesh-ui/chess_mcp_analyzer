@@ -2,6 +2,10 @@
 
 Grandmaster-MCP is an advanced chess intelligence system that bridges the gap between a local Stockfish 16 engine and Large Language Models (like Claude). It combines a high-performance chess GUI with a real-time coaching layer.
 
+## 📺 Demonstration
+
+![Chess AI Workstation Demo](file:///Users/riteshsingh/.gemini/antigravity/brain/f2835e11-94a3-4038-97ae-3a3a226dad2d/ui_refinements_verify_retry2_1772009240801.webp)
+
 ## 🏗 Architecture
 
 ```mermaid
@@ -85,7 +89,7 @@ Add the following to your `claude_desktop_config.json`:
 3. **Ask Claude**: In Claude Desktop, ask: *"How is my position looking?"* or *"Give me a coaching tip."* Claude will analyze the live game state and push a message directly to your browser panel.
 
 ## 🔍 Troubleshooting
-
+-**Stop all the running server**:lsof -ti :8080,8000 | xargs kill -9
 - **Panel shows "OFFLINE"**: Ensure the `mcp_server.py` is running and no other process is using port 8000.
 - **No tips appearing**: Ensure you only have **one** instance of the server running (either in a terminal or launched by Claude Desktop, not both).
 - **Stockfish not found**: Run `brew install stockfish` or update `STOCKFISH_PATH` in `mcp_server.py`.

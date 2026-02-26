@@ -35,7 +35,10 @@ game_context = {
     "prev_score": 0.3, # Average white advantage at start
     "hot_squares": [], # List of {square: 'a1', type: 'gold'|'red'}
     "active_challenge": None, # {target_square: 'e4', message: '...'}
-    "analysis_history": [] # List of {fen: str, move: str, cp_loss: float, turn: str}
+    "analysis_history": [], # List of {fen: str, move: str, cp_loss: float, turn: str}
+    "last_critical_tip_time": 0, # Timestamp of last blunder/mistake alert
+    "last_move_quality": "Good", # Track quality of the very last move
+    "analyze_cpu": False # DEFAULT: DISABLED
 }
 
 # --- Connection Manager ---
@@ -121,6 +124,7 @@ class GameSyncRequest(BaseModel):
     last_move: str | None = None
     turn: str
     player_color: str = "white"
+    analyze_cpu: bool = False
 
 class CoachQuery(BaseModel):
     fen: str
@@ -311,6 +315,7 @@ async def game_sync(request: GameSyncRequest):
     game_context["last_move"] = request.last_move
     game_context["turn"] = request.turn
     game_context["player_color"] = request.player_color
+    game_context["analyze_cpu"] = request.analyze_cpu
     game_context["updated_at"] = datetime.datetime.now(datetime.UTC).isoformat()
     
     # 2. SYNC GLOBAL BOARD (Fix for Stockfish tools)
@@ -356,85 +361,75 @@ def get_friendly_quality_message(quality: str, is_player: bool, eval_val: float)
     if is_player:
         if "Blunder" in quality:
             return random.choice([
-                "Ouch! That's a major slip-up.",
-                "Wait, you might have missed something big there.",
-                "You've given the engine a huge opening.",
-                "Tough move. You've dropped a lot of ground here."
+                "Critical error. You've dropped significant ground.",
+                "Major oversight. The position is now heavily compromised.",
+                "Blunder detected. You've given away a huge advantage."
             ])
         elif "Mistake" in quality:
             return random.choice([
-                "That's a bit of an error, unfortunately.",
-                "You had a better option than that one.",
-                "Careful! This makes your position harder to defend.",
-                "A small mistake, but it might hurt you later."
+                "Sub-optimal move. You had a stronger continuation.",
+                "A clear error that makes defense much harder.",
+                "Mistake. This gives the opponent a clear opening."
             ])
         elif "Inaccuracy" in quality:
             return random.choice([
-                "Not the best move, but you're still in it.",
-                "A slight inaccuracy. Let's see if you can recover.",
-                "There were slightly better squares for that piece.",
-                "You're drifting a bit, but nothing fatal yet."
+                "Slight inaccuracy. There were better squares available.",
+                "Not the best. You're drifting from the optimal line.",
+                "Subtle slip-up. Keep an eye on the initiative."
             ])
         elif "Great" in quality:
             return random.choice([
-                "Brilliant! That's exactly what the position called for.",
-                "Excellent find! You're playing like a pro.",
-                "Wow, what a move! A very strong continuation.",
-                "Fantastic! That's a high-level master move."
+                "Excellent! A precise and powerful continuation.",
+                "Brilliant find. You've secured a strong advantage.",
+                "Master-level precision. Exactly what the board needed."
             ])
         elif "Good" in quality:
-            if eval_val > 5: return "You're dominating! Just stay clean and win this."
+            if eval_val > 5: return "Dominating position. Stay clinical."
             return random.choice([
-                "Solid move. You're maintaining the pressure.",
-                "Good choice. Keeping the position stable.",
-                "A perfectly fine developing move.",
-                "Consistent play. Keep it up!"
+                "Solid choice. Maintaining the pressure.",
+                "Consistent play. Keeping the position stable.",
+                "Fine development. Proceed with your plan."
             ])
     else:
         # Engine just moved
         if "Blunder" in quality or "Mistake" in quality:
-            return "The computer made a mistake! This is your chance!"
+            return "Engine error! Seize the opportunity immediately."
         elif "Inaccuracy" in quality:
-            return "The engine played a sub-optimal move. Can you capitalize?"
+            return "Sub-optimal engine move. Can you capitalize?"
         else:
-            return "The computer plays a solid move. You'll need to stay sharp."
+            return "Solid engine response. Stay sharp."
             
-    return "The game is evolving. Let's see what happens next."
+    return "Game evolving. Watch the center."
 
 def get_conceptual_hint(board: chess.Board, move: chess.Move) -> str:
     piece = board.piece_at(move.from_square)
-    if not piece: return "Look for a strategic improvement."
+    if not piece: return "Look for tactical improvements."
     
     p_name = get_piece_name(piece.symbol())
     is_capture = board.is_capture(move)
     is_check = board.is_check()
     
-    # Regional hints
     file_idx = chess.square_file(move.to_square)
-    rank_idx = chess.square_rank(move.to_square)
-    
     region = "center"
     if file_idx < 3: region = "Queenside"
     elif file_idx > 4: region = "Kingside"
     
-    if is_capture:
-        return f"There's a strong tactical opportunity to make a <strong>Capture</strong>."
+    if is_capture: return "Tactical Opportunity: Capture available."
     
     if piece.piece_type == chess.PAWN:
-        if region == "center":
-            return "Consider solidifying or challenging the <strong>center</strong> with your pawns."
-        return f"A pawn move on the <strong>{region}</strong> could improve your structure."
+        if region == "center": return "Goal: Contest the center with pawns."
+        return f"Structure: Improve {region} pawn chain."
         
     if piece.piece_type in [chess.KNIGHT, chess.BISHOP]:
-        return f"One of your <strong>{p_name}s</strong> is looking for a more active square on the {region}."
+        return f"Activation: Move {p_name} to {region}."
         
     if piece.piece_type == chess.ROOK:
-        return f"Look for an opportunity to activate your <strong>Rook</strong>, perhaps on an open file."
+        return "Activation: Place Rook on open file."
         
     if piece.piece_type == chess.QUEEN:
-        return "Your <strong>Queen</strong> could take a more dominant position in the game."
+        return "Dominance: Centralize the Queen."
 
-    return f"Think about how to better position your <strong>{p_name}</strong>."
+    return f"Positioning: Improve {p_name} placement."
 
 async def push_auto_analysis(fen: str):
     """Performs a deep Stockfish analysis and pushes tactical coaching to the GUI."""
@@ -449,6 +444,11 @@ async def push_auto_analysis(fen: str):
         side_who_moved = "white" if current_board.turn == chess.BLACK else "black"
         is_player_move = (side_who_moved == player_color)
         
+        # --- CPU Analysis Control ---
+        if not is_player_move and not game_context.get("analyze_cpu", False):
+            print(f"[Pacing] Skipping CPU analysis for {side_who_moved} (Analyze CPU is OFF)")
+            return
+            
         transport, engine = await chess.engine.popen_uci(STOCKFISH_PATH)
         try:
             # 1. ANALYZE CURRENT POSITION
@@ -496,6 +496,23 @@ async def push_auto_analysis(fen: str):
                 color = "#0dcaf0" # Cyan
             else: 
                 move_quality = "✅ Good Move"
+
+            game_context["last_move_quality"] = move_quality
+            
+            # --- Pacing & Noise Filter ---
+            import time
+            current_time = time.time()
+            is_critical = "Blunder" in move_quality or "Mistake" in move_quality
+            
+            if is_critical:
+                game_context["last_critical_tip_time"] = current_time
+            
+            # Skip routine engine analysis if we just showed a critical tip (unless engine also blundered)
+            if not is_player_move and not is_critical:
+                time_since_tip = current_time - game_context.get("last_critical_tip_time", 0)
+                if time_since_tip < 5.0:
+                    print(f"[Pacing] Suppressing routine engine tip to preserve focus on player error ({time_since_tip:.1f}s ago)")
+                    return
 
             # 3. CONCEPTUAL HINTS
             prediction = ""
@@ -553,31 +570,25 @@ async def push_auto_analysis(fen: str):
             game_context["hot_squares"] = hot_squares
             game_context["active_challenge"] = active_challenge
 
-            # 6. ASSEMBLE FRIENDLY MESSAGE
+            # 6. ASSEMBLE CONCISE MESSAGE
             friendly_intro = get_friendly_quality_message(move_quality, is_player_move, eval_val)
-            header_text = move_quality if is_player_move else f"Engine plays: [Hidden]"
+            header_text = move_quality if is_player_move else f"Engine Detail"
             
-            # Note: We keep the header_text clear for the player's move quality, 
-            # but for engine moves we can hide the exact SAN if you want, 
-            # though the user already sees it on the board. 
-            # Let's just focus on the suggestion part.
             if not is_player_move:
-                # Get the last move from game_context or board
-                lm = game_context.get("last_move", "??")
-                header_text = f"Engine Move Analysis"
+                header_text = f"CPU Analysis"
 
-            html_msg = f"<div style='margin-bottom:8px'><strong style='color:{color}; font-size:1.1em'>{header_text}</strong> <span style='color:#6c757d'>(Eval: {prefix}{eval_val:0.2f})</span></div>"
-            html_msg += f"<div style='margin-bottom:10px; font-style:italic; font-size:1.05em; color:#212529'>\"{friendly_intro}\"</div>"
+            html_msg = f"<div style='margin-bottom:6px'><strong style='color:{color}; font-size:1.05em'>{header_text}</strong> <span style='color:#94a3b8'>(Eval: {prefix}{eval_val:0.2f})</span></div>"
+            html_msg += f"<div style='margin-bottom:8px; font-weight:500; color:#f1f5f9'>\"{friendly_intro}\"</div>"
             
             if feedback:
-                html_msg += f"<div style='margin-bottom:8px; color:#d63384'>💡 {feedback}</div>"
+                html_msg += f"<div style='margin-bottom:6px; color:#f472b6; font-size:0.95em'>💡 {feedback}</div>"
             
-            html_msg += f"<div style='color:#495057'>💭 {prediction}</div>"
+            html_msg += f"<div style='color:#cbd5e1; font-size:0.95em'>💭 {prediction}</div>"
             
             if is_player_move and cp_loss > 50 and "pv" in top_pv:
                 best_move = top_pv["pv"][0]
                 better_hint = get_conceptual_hint(current_board, best_move)
-                html_msg += f"<div style='margin-top:8px; color:#0d6efd'>💡 A better approach would have involved: <strong>{better_hint}</strong></div>"
+                html_msg += f"<div style='margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.1); color:#818cf8; font-size:0.95em'>Better: <strong>{better_hint}</strong></div>"
 
             # Broadcast to GUI
             await manager.broadcast({
@@ -650,6 +661,12 @@ async def play_engine_move() -> str:
         
     transport, engine = await chess.engine.popen_uci(STOCKFISH_PATH)
     try:
+        # PACING: Wait if the player just blundered so they can read the tip
+        last_quality = game_context.get("last_move_quality", "Good")
+        if "Blunder" in last_quality or "Mistake" in last_quality:
+            print(f"[Pacing] Delaying engine response for user reflection (Quality: {last_quality})")
+            await asyncio.sleep(2.0)
+
         result = await engine.play(board, chess.engine.Limit(time=1.0))
         move_san = board.san(result.move)
         board.push(result.move)

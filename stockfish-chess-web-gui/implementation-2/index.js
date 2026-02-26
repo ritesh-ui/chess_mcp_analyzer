@@ -93,7 +93,8 @@ document.addEventListener("DOMContentLoaded", function () {
             pgn,
             last_move: lastMove,
             turn,
-            player_color: playerColor
+            player_color: playerColor,
+            analyze_cpu: document.getElementById('analyze-cpu-toggle').checked
         };
         fetch(`${MCP_SERVER}/game/sync`, {
             method: 'POST',
@@ -392,8 +393,24 @@ document.addEventListener("DOMContentLoaded", function () {
     adjustScoreBarHeight();
     window.addEventListener('resize', adjustScoreBarHeight);
 
-    document.getElementById("newGameBtn").addEventListener("click", () => { gameInstance.reset(); gameInstance.start(); });
-    document.getElementById("resetGameBtn").addEventListener("click", () => { gameInstance.reset(); gameInstance.start(); });
+    document.getElementById("newGameBtn").addEventListener("click", () => {
+        gameInstance.reset();
+        gameInstance.start();
+        clearAIChat();
+    });
+    document.getElementById("resetGameBtn").addEventListener("click", () => {
+        gameInstance.reset();
+        gameInstance.start();
+        clearAIChat();
+    });
+
+    function clearAIChat() {
+        document.getElementById("coach-messages").innerHTML = `
+            <div class="text-center py-4 opacity-50">
+                <p class="small mb-0">Board reset. Play a move to begin analysis.</p>
+            </div>
+        `;
+    }
     document.getElementById("takeBackBtn").addEventListener("click", () => gameInstance.undo());
     document.getElementById("flipBoardBtn").addEventListener("click", () => gameInstance.flipBoard());
     document.getElementById("switchBoardBtn").addEventListener("click", () => gameInstance.switchBoard());
@@ -416,6 +433,7 @@ document.addEventListener("DOMContentLoaded", function () {
         input.value = '';
 
         try {
+            // Existing fetch for coach query
             const response = await fetch(`${MCP_SERVER}/coach/query`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -426,6 +444,21 @@ document.addEventListener("DOMContentLoaded", function () {
             coachMsg.className = "chat-bubble bubble-coach shadow-sm";
             coachMsg.innerHTML = `<strong>Coach:</strong> ${data.response}`;
             history.appendChild(coachMsg);
+
+            // New fetch to sync CPU analysis toggle
+            fetch(`${MCP_SERVER}/game/sync`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    fen: game.fen(),
+                    pgn: game.pgn(),
+                    last_move: null, // No specific last move for a chat query
+                    turn: game.turn() === 'w' ? 'white' : 'black',
+                    player_color: playerColor,
+                    analyze_cpu: document.getElementById('analyze-cpu-toggle').checked
+                })
+            }).catch(e => { console.error("Failed to sync CPU analysis toggle:", e); });
+
         } catch (err) { console.error(err); }
         history.scrollTop = history.scrollHeight;
     }
