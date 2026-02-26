@@ -95,4 +95,3 @@ Add the following to your `claude_desktop_config.json`:
 - **Stockfish not found**: Run `brew install stockfish` or update `STOCKFISH_PATH` in `mcp_server.py`.
 
 ---
-*Created by Antigravity AI Coach Integration*
