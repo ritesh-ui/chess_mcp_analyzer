@@ -201,14 +201,26 @@ async def coach_query(request: CoachQuery):
             board_text = f"White pieces: {', '.join(white_pieces)}\nBlack pieces: {', '.join(black_pieces)}"
             
             transport, engine = await chess.engine.popen_uci(STOCKFISH_PATH)
-            analysis = await engine.analyse(temp_board, chess.engine.Limit(time=0.3), multipv=2)
+            # Increased time limit for better depth/quality of answers in query mode
+            analysis = await engine.analyse(temp_board, chess.engine.Limit(time=0.8), multipv=2)
             await engine.quit()
             
+            position_status = ""
             if analysis:
                 top = analysis[0]
                 score = top["score"].relative.score(mate_score=10000)
                 eval_val = score / 100.0 if score is not None else 0
                 eval_str = f"{'+' if eval_val > 0 else ''}{eval_val:.2f}"
+                
+                # Determine if the player asking is losing heavily
+                is_white = request.player_color.lower() == "white"
+                player_score = eval_val if is_white else -eval_val
+                
+                if player_score <= -3.0:
+                    position_status = "(Player is heavily losing. The engine is just playing resilient defense/waiting moves to delay defeat.)"
+                elif player_score >= 3.0:
+                    position_status = "(Player is heavily winning.)"
+                
                 for i, entry in enumerate(analysis):
                     if "pv" in entry:
                         # Extract ONLY the immediate recommended move (not a sequence)
@@ -236,7 +248,8 @@ async def coach_query(request: CoachQuery):
         "1. You CANNOT read FEN well. ALWAYS rely on the 'Exact Piece Positions' list to know where pieces are.\n"
         "2. NEVER claim a move attacks a piece (e.g. 'threatens the knight on f6') unless the piece ACTUALLY exists on that square in the 'Exact Piece Positions' list.\n"
         "3. Explain ONLY the single immediate engine suggestion. DO NOT invent, analyze, or predict follow-up moves (like 'after that, you can play...'), because you cannot see the future board state.\n"
-        "4. Keep your response extremely concise, crisp, and direct (under 60 words).\n"
+        "4. If the position evaluates as 'heavily losing' and the move doesn't capture or check, DO NOT invent grand attacking plans (e.g. 'doubling rooks'). Just explain it honestly as a quiet, resilient defensive move.\n"
+        "5. Keep your response extremely concise, crisp, and direct (under 60 words).\n"
         "Avoid raw engine jargon unless asked.\n"
         f"You are coaching the {request.player_color} player."
     )
@@ -245,7 +258,7 @@ async def coach_query(request: CoachQuery):
         f"Game State (FEN): {request.fen}\n"
         f"Exact Piece Positions:\n{board_text}\n\n"
         f"Move History (PGN): {request.pgn}\n"
-        f"Current Engine Evaluation: {eval_str}\n"
+        f"Current Engine Evaluation: {eval_str} {position_status}\n"
         f"Top Engine Suggestions & Forecasts:\n{chr(10).join(best_lines)}\n\n"
         f"Direct Tactical Truths for Top Move:\n{tactical_context}\n\n"
         f"Student Question: {request.question}"
