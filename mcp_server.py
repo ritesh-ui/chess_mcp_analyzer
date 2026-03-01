@@ -178,10 +178,28 @@ async def coach_query(request: CoachQuery):
     # 1. Analyze with Stockfish first to provide context to the LLM
     eval_str = "Unknown"
     best_lines = []
+    tactical_truths = []
+    board_text = "Unknown"
+    
     if os.path.exists(STOCKFISH_PATH):
         try:
-            # We use a temporary board for thread safety or just use the FEN
+            # We use a temporary board for thread safety
             temp_board = chess.Board(request.fen)
+            
+            # --- Translate FEN into absolute piece locations ---
+            piece_names = {'P': 'Pawn', 'N': 'Knight', 'B': 'Bishop', 'R': 'Rook', 'Q': 'Queen', 'K': 'King',
+                           'p': 'Pawn', 'n': 'Knight', 'b': 'Bishop', 'r': 'Rook', 'q': 'Queen', 'k': 'King'}
+            white_pieces = []
+            black_pieces = []
+            for sq, piece in temp_board.piece_map().items():
+                sq_name = chess.square_name(sq)
+                p_name = piece_names.get(piece.symbol(), "Piece")
+                if piece.color == chess.WHITE:
+                    white_pieces.append(f"{p_name} at {sq_name}")
+                else:
+                    black_pieces.append(f"{p_name} at {sq_name}")
+            board_text = f"White pieces: {', '.join(white_pieces)}\nBlack pieces: {', '.join(black_pieces)}"
+            
             transport, engine = await chess.engine.popen_uci(STOCKFISH_PATH)
             analysis = await engine.analyse(temp_board, chess.engine.Limit(time=0.3), multipv=2)
             await engine.quit()
@@ -193,25 +211,47 @@ async def coach_query(request: CoachQuery):
                 eval_str = f"{'+' if eval_val > 0 else ''}{eval_val:.2f}"
                 for i, entry in enumerate(analysis):
                     if "pv" in entry:
-                        line = temp_board.san(entry["pv"][0])
-                        best_lines.append(f"Rank {i+1}: {line}")
+                        # Extract the full PV sequence as a readable string
+                        line_moves = []
+                        sim_board = temp_board.copy()
+                        for pv_move in entry["pv"][:4]: # Limit to next 4 ply for brevity
+                            line_moves.append(sim_board.san(pv_move))
+                            sim_board.push(pv_move)
+                        
+                        best_lines.append(f"Rank {i+1} Forecast: {' '.join(line_moves)}")
+                        
+                        # Extract concrete tactical facts for the primary recommended move
+                        if i == 0:
+                            first_pv_move = entry["pv"][0]
+                            is_cap = temp_board.is_capture(first_pv_move)
+                            gives_chk = temp_board.gives_check(first_pv_move)
+                            tactical_truths.append("Does the move capture a piece? " + ("Yes" if is_cap else "No"))
+                            tactical_truths.append("Does the move give Check? " + ("Yes" if gives_chk else "No"))
+
         except Exception as e:
             print(f"Error gathering Stockfish context for LLM: {e}")
 
-    # 2. Build the Prompt
+    tactical_context = "\n".join(tactical_truths) if tactical_truths else "None"
+
+    # 2. Build the Prompt (Strict Anti-Hallucination)
     system_prompt = (
-        "You are 'The Grandmaster Coach', a world-class chess mentor. "
-        "Your goal is to explain chess concepts in a human, encouraging, and clear way. "
-        "Keep your response extremely concise, crisp, and direct (under 50 words). "
-        "Avoid raw engine jargon or deep variations unless specifically asked. "
+        "You are 'The Grandmaster Coach', a world-class chess mentor.\n\n"
+        "FATAL RULES (DO NOT BREAK):\n"
+        "1. You CANNOT read FEN well. ALWAYS rely on the 'Exact Piece Positions' list to know where pieces are.\n"
+        "2. NEVER claim a move attacks a piece (e.g. 'threatens the knight on f6') unless the piece ACTUALLY exists on that square in the 'Exact Piece Positions' list.\n"
+        "3. Focus ONLY on general strategic principles (e.g., 'centralizes the piece', 'controls open files') and the Exact Engine Forecast provided.\n"
+        "4. Keep your response extremely concise, crisp, and direct (under 60 words).\n"
+        "Avoid raw engine jargon unless asked.\n"
         f"You are coaching the {request.player_color} player."
     )
     
     user_context = (
         f"Game State (FEN): {request.fen}\n"
+        f"Exact Piece Positions:\n{board_text}\n\n"
         f"Move History (PGN): {request.pgn}\n"
         f"Current Engine Evaluation: {eval_str}\n"
-        f"Top Engine Suggestions: {', '.join(best_lines)}\n\n"
+        f"Top Engine Suggestions & Forecasts:\n{chr(10).join(best_lines)}\n\n"
+        f"Direct Tactical Truths for Top Move:\n{tactical_context}\n\n"
         f"Student Question: {request.question}"
     )
 
@@ -225,9 +265,10 @@ async def coach_query(request: CoachQuery):
                     {"role": "user", "content": user_context}
                 ],
                 max_tokens=150,
-                temperature=0.7
+                temperature=0.3  # Reduced for determinism/less hallucination
             )
         )
+
         return {"response": response.choices[0].message.content}
     except Exception as e:
         return {"response": f"Sorry, I encountered an error while thinking: {str(e)}"}
