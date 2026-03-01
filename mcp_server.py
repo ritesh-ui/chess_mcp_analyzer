@@ -201,8 +201,8 @@ async def coach_query(request: CoachQuery):
             board_text = f"White pieces: {', '.join(white_pieces)}\nBlack pieces: {', '.join(black_pieces)}"
             
             transport, engine = await chess.engine.popen_uci(STOCKFISH_PATH)
-            # Increased time limit for better depth/quality of answers in query mode
-            analysis = await engine.analyse(temp_board, chess.engine.Limit(time=0.8), multipv=2)
+            # Increased time limit for robust depth/quality of answers in query mode
+            analysis = await engine.analyse(temp_board, chess.engine.Limit(time=1.5), multipv=2)
             await engine.quit()
             
             position_status = ""
