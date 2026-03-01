@@ -211,18 +211,14 @@ async def coach_query(request: CoachQuery):
                 eval_str = f"{'+' if eval_val > 0 else ''}{eval_val:.2f}"
                 for i, entry in enumerate(analysis):
                     if "pv" in entry:
-                        # Extract the full PV sequence as a readable string
-                        line_moves = []
+                        # Extract ONLY the immediate recommended move (not a sequence)
                         sim_board = temp_board.copy()
-                        for pv_move in entry["pv"][:4]: # Limit to next 4 ply for brevity
-                            line_moves.append(sim_board.san(pv_move))
-                            sim_board.push(pv_move)
-                        
-                        best_lines.append(f"Rank {i+1} Forecast: {' '.join(line_moves)}")
+                        first_pv_move = entry["pv"][0]
+                        suggested_move = sim_board.san(first_pv_move)
+                        best_lines.append(f"Rank {i+1} Suggestion: {suggested_move}")
                         
                         # Extract concrete tactical facts for the primary recommended move
                         if i == 0:
-                            first_pv_move = entry["pv"][0]
                             is_cap = temp_board.is_capture(first_pv_move)
                             gives_chk = temp_board.gives_check(first_pv_move)
                             tactical_truths.append("Does the move capture a piece? " + ("Yes" if is_cap else "No"))
@@ -239,7 +235,7 @@ async def coach_query(request: CoachQuery):
         "FATAL RULES (DO NOT BREAK):\n"
         "1. You CANNOT read FEN well. ALWAYS rely on the 'Exact Piece Positions' list to know where pieces are.\n"
         "2. NEVER claim a move attacks a piece (e.g. 'threatens the knight on f6') unless the piece ACTUALLY exists on that square in the 'Exact Piece Positions' list.\n"
-        "3. Focus ONLY on general strategic principles (e.g., 'centralizes the piece', 'controls open files') and the Exact Engine Forecast provided.\n"
+        "3. Explain ONLY the single immediate engine suggestion. DO NOT invent, analyze, or predict follow-up moves (like 'after that, you can play...'), because you cannot see the future board state.\n"
         "4. Keep your response extremely concise, crisp, and direct (under 60 words).\n"
         "Avoid raw engine jargon unless asked.\n"
         f"You are coaching the {request.player_color} player."
