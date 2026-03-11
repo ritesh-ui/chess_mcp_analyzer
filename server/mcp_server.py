@@ -133,12 +133,17 @@ class GameSyncRequest(BaseModel):
     turn: str
     player_color: str = "white"
     analyze_cpu: bool = False
+    api_key: str | None = None
 
 class CoachQuery(BaseModel):
     fen: str
     pgn: str
     question: str
     player_color: str = "white"
+    api_key: str | None = None
+
+class ReviewRequest(BaseModel):
+    api_key: str | None = None
 
 # --- HTTP Endpoints for React UI ---
 @app.get("/status")
@@ -169,7 +174,7 @@ async def coach_query(request: CoachQuery):
     """
     Handles interactive questions from the user via the LLM.
     """
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key = request.api_key or os.getenv("OPENAI_API_KEY")
     if not api_key:
         return {"response": "I'd love to chat more deeply, but my AI brain (OpenAI API Key) isn't plugged in right now! Please set the OPENAI_API_KEY environment variable to enable full interactive coaching."}
 
@@ -299,7 +304,7 @@ async def coach_query(request: CoachQuery):
         return {"response": f"Sorry, I encountered an error while thinking: {str(e)}"}
 
 @app.post("/game/review")
-async def game_review():
+async def game_review(request: ReviewRequest = None):
     """
     Summarizes the game and identifies the biggest blunder for the 'Memory Session'.
     """
@@ -321,7 +326,7 @@ async def game_review():
             biggest_blunder = sorted_history[0]
 
     # 2. Generate Lessons using LLM
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key = (request.api_key if request else None) or os.getenv("OPENAI_API_KEY")
     summary = "The game was complex. Focus on center control and piece activity."
     
     if api_key:
@@ -409,6 +414,7 @@ async def game_sync(request: GameSyncRequest):
     game_context["turn"] = request.turn
     game_context["player_color"] = request.player_color
     game_context["analyze_cpu"] = request.analyze_cpu
+    game_context["api_key"] = request.api_key
     game_context["updated_at"] = datetime.datetime.now(datetime.UTC).isoformat()
     
     # 2. SYNC GLOBAL BOARD (Fix for Stockfish tools)
@@ -689,7 +695,7 @@ async def push_auto_analysis(fen: str):
              # ─────────────────────────────────────────────────────────────
              # STAGE 3: LLM COACHING (Only for Mistake / Blunder)
              # ─────────────────────────────────────────────────────────────
-            api_key = os.getenv("OPENAI_API_KEY")
+            api_key = game_context.get("api_key") or os.getenv("OPENAI_API_KEY")
 
             # While we await LLM, immediately show a holding message
             holding_html = f"<div style='margin-bottom:6px'><strong style='color:{color}'>{badge} {classification}</strong></div>"
