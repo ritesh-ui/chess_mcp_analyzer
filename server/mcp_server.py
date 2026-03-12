@@ -162,7 +162,10 @@ async def make_move(request: MoveRequest):
         if move in board.legal_moves:
             board.push(move)
             # BRROADCAST CHANGE
-            asyncio.run_coroutine_threadsafe(manager.broadcast(), loop)
+            if loop:
+                asyncio.run_coroutine_threadsafe(manager.broadcast(), loop)
+            else:
+                asyncio.create_task(manager.broadcast())
             return {"status": "success", "fen": board.fen()}
         else:
             raise HTTPException(status_code=400, detail="Illegal move")
@@ -387,16 +390,16 @@ async def reset_board():
     game_context["last_critical_tip_time"] = 0
     
     # BROADCAST CHANGE to clear highlights on frontend
+    payload = {
+        "type": "coach_tip",
+        "message": "<div class='text-center py-2 opacity-50 small'>Board re-initialized. Ready for new game.</div>",
+        "hot_squares": [],
+        "challenge": None
+    }
     if loop:
-        asyncio.run_coroutine_threadsafe(
-            manager.broadcast({
-                "type": "coach_tip",
-                "message": "<div class='text-center py-2 opacity-50 small'>Board re-initialized. Ready for new game.</div>",
-                "hot_squares": [],
-                "challenge": None
-            }), 
-            loop
-        )
+        asyncio.run_coroutine_threadsafe(manager.broadcast(payload), loop)
+    else:
+        asyncio.create_task(manager.broadcast(payload))
     
     print("[System] Full backend reset completed.")
     return {"status": "reset", "fen": board.fen()}
@@ -439,6 +442,8 @@ async def game_sync(request: GameSyncRequest):
     # 3. TRIGGER AUTO-ANALYSIS (Optional/Background)
     if loop:
         asyncio.run_coroutine_threadsafe(push_auto_analysis(request.fen), loop)
+    else:
+        asyncio.create_task(push_auto_analysis(request.fen))
         
     return {"status": "synced"}
 
@@ -915,7 +920,10 @@ async def play_engine_move() -> str:
         board.push(result.move)
         
         # BROADCAST TO UI INSTANTLY
-        asyncio.run_coroutine_threadsafe(manager.broadcast(), loop)
+        if loop:
+            asyncio.run_coroutine_threadsafe(manager.broadcast(), loop)
+        else:
+            asyncio.create_task(manager.broadcast())
         
         return f"Engine plays: {move_san}. New FEN: {board.fen()}"
     finally:
@@ -954,8 +962,9 @@ def ensure_hub_started():
         else:
             print("[System] WebSocket Hub is ready.")
 
-# Initialize Hub on import so it works with 'fastmcp dev'
-ensure_hub_started()
+# Initialize Hub ONLY when run interactively/via MCP, not when imported by Render Uvicorn
+if __name__ == "__main__" or ("fastmcp" in getattr(sys, "argv", [])[0] if getattr(sys, "argv", []) else False):
+    ensure_hub_started()
 
 if __name__ == "__main__":
     # Start MCP Server (Stdio)
