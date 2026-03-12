@@ -4,8 +4,8 @@ document.addEventListener("DOMContentLoaded", function () {
     let currentMode = 'Player vs Engine';
     let board;
     let playerColor = 'white';
-    const MCP_SERVER = 'http://localhost:8000';
-    const WS_URL = 'ws://localhost:8000/ws';
+    const MCP_SERVER = 'https://chess-mcp-analyzer.onrender.com';
+    const WS_URL = 'wss://chess-mcp-analyzer.onrender.com/ws';
     let coachSocket = null;
     let currentChallenge = null;
     let drillData = null;
