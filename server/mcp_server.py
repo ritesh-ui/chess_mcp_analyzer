@@ -43,6 +43,40 @@ def find_stockfish():
     return "stockfish"
 
 STOCKFISH_PATH = find_stockfish()
+print(f"[Config] Stockfish path: {STOCKFISH_PATH}")
+
+# --- Singleton Stockfish Engine Manager ---
+# Reuses ONE engine process instead of spawning/killing on every move
+_engine_instance = None
+_engine_lock = asyncio.Lock()  # Prevents concurrent Stockfish access
+_pending_analysis: asyncio.Task | None = None  # For debouncing
+
+async def get_engine():
+    """Returns a reusable Stockfish engine. Creates one if needed."""
+    global _engine_instance
+    if _engine_instance is None:
+        try:
+            transport, _engine_instance = await chess.engine.popen_uci(STOCKFISH_PATH)
+            # Low memory config for cloud deployment
+            await _engine_instance.configure({"Hash": 16, "Threads": 1})
+            print("[Engine] Singleton Stockfish started (Hash=16MB, Threads=1)")
+        except Exception as e:
+            print(f"[Engine] Failed to start Stockfish: {e}")
+            _engine_instance = None
+            raise
+    return _engine_instance
+
+async def safe_engine_analyse(board_obj, limit, **kwargs):
+    """Thread-safe engine analysis using the singleton + lock."""
+    async with _engine_lock:
+        engine = await get_engine()
+        return await engine.analyse(board_obj, limit, **kwargs)
+
+async def safe_engine_play(board_obj, limit):
+    """Thread-safe engine play using the singleton + lock."""
+    async with _engine_lock:
+        engine = await get_engine()
+        return await engine.play(board_obj, limit)
 
 # --- Global State Hub ---
 board = chess.Board()
@@ -204,7 +238,7 @@ async def coach_query(request: CoachQuery):
     tactical_truths = []
     board_text = "Unknown"
     
-    if os.path.exists(STOCKFISH_PATH):
+    if os.path.exists(STOCKFISH_PATH) or shutil.which("stockfish"):
         try:
             # We use a temporary board for thread safety
             temp_board = chess.Board(request.fen)
@@ -223,10 +257,8 @@ async def coach_query(request: CoachQuery):
                     black_pieces.append(f"{p_name} at {sq_name}")
             board_text = f"White pieces: {', '.join(white_pieces)}\nBlack pieces: {', '.join(black_pieces)}"
             
-            transport, engine = await chess.engine.popen_uci(STOCKFISH_PATH)
-            # Increased time limit for robust depth/quality of answers in query mode
-            analysis = await engine.analyse(temp_board, chess.engine.Limit(time=1.5), multipv=2)
-            await engine.quit()
+            # Use singleton engine with lock
+            analysis = await safe_engine_analyse(temp_board, chess.engine.Limit(time=1.5), multipv=2)
             
             if analysis:
                 top = analysis[0]
@@ -367,12 +399,10 @@ async def game_review(request: ReviewRequest = None):
 
     # 3. Get best move for the blunder drill
     drill_data = None
-    if biggest_blunder and os.path.exists(STOCKFISH_PATH):
+    if biggest_blunder and (os.path.exists(STOCKFISH_PATH) or shutil.which("stockfish")):
         try:
             temp_board = chess.Board(biggest_blunder["fen"])
-            transport, engine = await chess.engine.popen_uci(STOCKFISH_PATH)
-            analysis = await engine.analyse(temp_board, chess.engine.Limit(depth=18))
-            await engine.quit()
+            analysis = await safe_engine_analyse(temp_board, chess.engine.Limit(depth=18))
             
             if analysis:
                 best_move = temp_board.san(analysis[0]["pv"][0])
@@ -453,11 +483,23 @@ async def game_sync(request: GameSyncRequest):
 
     print(f"[Game Sync] Move: {request.last_move} | Turn: {request.turn} | Player: {request.player_color} | FEN: {request.fen[:40]}...")
     
-    # 3. TRIGGER AUTO-ANALYSIS (Optional/Background)
+    # 3. TRIGGER AUTO-ANALYSIS with DEBOUNCE
+    global _pending_analysis
+    
+    async def debounced_analysis(fen):
+        """Wait before analyzing — if a new move arrives, this task gets cancelled."""
+        await asyncio.sleep(1.0)  # Debounce window
+        await push_auto_analysis(fen)
+    
+    # Cancel any pending analysis from a previous rapid move
+    if _pending_analysis and not _pending_analysis.done():
+        _pending_analysis.cancel()
+        print("[Debounce] Cancelled stale analysis task")
+    
     if loop:
-        asyncio.run_coroutine_threadsafe(push_auto_analysis(request.fen), loop)
+        _pending_analysis = asyncio.run_coroutine_threadsafe(debounced_analysis(request.fen), loop)
     else:
-        asyncio.create_task(push_auto_analysis(request.fen))
+        _pending_analysis = asyncio.create_task(debounced_analysis(request.fen))
         
     return {"status": "synced"}
 
@@ -556,7 +598,7 @@ async def push_auto_analysis(fen: str):
     Stage 2: Cost Gate — only Mistake/Blunder triggers an LLM call.
     Stage 3: Focused LLM prompt (<90 words) for genuine coaching on errors.
     """
-    if not os.path.exists(STOCKFISH_PATH):
+    if not os.path.exists(STOCKFISH_PATH) and not shutil.which("stockfish"):
         return
 
     try:
@@ -570,15 +612,14 @@ async def push_auto_analysis(fen: str):
             print(f"[Pacing] Skipping CPU analysis for {side_who_moved} (Analyze CPU is OFF)")
             return
 
-        transport, engine = await chess.engine.popen_uci(STOCKFISH_PATH)
-        try:
+        # Use singleton engine with lock
+        analysis_after = await safe_engine_analyse(current_board, chess.engine.Limit(time=0.5), multipv=1)
+        top_pv = analysis_after[0]
+        if True:  # Preserves original indentation block
             # ─────────────────────────────────────────────────────────────
             # STAGE 1: ENGINE CLASSIFICATION
             # ─────────────────────────────────────────────────────────────
-
-            # Analyse current (post-move) position
-            analysis_after = await engine.analyse(current_board, chess.engine.Limit(time=0.5), multipv=1)
-            top_pv = analysis_after[0]
+            pass
 
             score_after_raw = top_pv["score"].relative.score(mate_score=10000)
             # Convert to centipawns from the perspective of the player who just moved
@@ -858,8 +899,8 @@ async def push_auto_analysis(fen: str):
                 "challenge": active_challenge
             })
 
-        finally:
-            await engine.quit()
+    except asyncio.CancelledError:
+        print("[Debounce] Analysis task was cancelled (superseded by newer move)")
     except Exception as e:
         print(f"[Auto-Analysis Error] {e}")
 
@@ -873,12 +914,11 @@ async def get_game_status():
 @mcp.tool()
 async def get_board_analysis() -> str:
     """Evaluates the current board state and explains why the last move was good or bad."""
-    if not os.path.exists(STOCKFISH_PATH):
+    if not os.path.exists(STOCKFISH_PATH) and not shutil.which("stockfish"):
         return "Error: Stockfish not found."
     
-    transport, engine = await chess.engine.popen_uci(STOCKFISH_PATH)
     try:
-        analysis = await engine.analyse(board, chess.engine.Limit(time=0.5))
+        analysis = await safe_engine_analyse(board, chess.engine.Limit(time=0.5))
         score = analysis["score"].relative.score(mate_score=10000)
         feedback = "Position is balanced."
         if score > 150: feedback = "White has a significant advantage."
@@ -886,8 +926,8 @@ async def get_board_analysis() -> str:
         elif score < -150: feedback = "Black has a significant advantage."
         elif score < -50: feedback = "Black is slightly better."
         return f"FEN: {board.fen()}\nEvaluation: {score/100.0}\nAnalysis: {feedback}"
-    finally:
-        await engine.quit()
+    except Exception as e:
+        return f"Error during analysis: {e}"
 
 @mcp.tool()
 async def get_game_context() -> str:
@@ -921,27 +961,23 @@ async def play_engine_move() -> str:
     if board.is_game_over():
         return "Game is already over."
         
-    transport, engine = await chess.engine.popen_uci(STOCKFISH_PATH)
-    try:
-        # PACING: Wait if the player just blundered so they can read the tip
-        last_quality = game_context.get("last_move_quality", "Good")
-        if "Blunder" in last_quality or "Mistake" in last_quality:
-            print(f"[Pacing] Delaying engine response for user reflection (Quality: {last_quality})")
-            await asyncio.sleep(2.0)
+    # PACING: Wait if the player just blundered so they can read the tip
+    last_quality = game_context.get("last_move_quality", "Good")
+    if "Blunder" in last_quality or "Mistake" in last_quality:
+        print(f"[Pacing] Delaying engine response for user reflection (Quality: {last_quality})")
+        await asyncio.sleep(2.0)
 
-        result = await engine.play(board, chess.engine.Limit(time=1.0))
-        move_san = board.san(result.move)
-        board.push(result.move)
-        
-        # BROADCAST TO UI INSTANTLY
-        if loop:
-            asyncio.run_coroutine_threadsafe(manager.broadcast(), loop)
-        else:
-            asyncio.create_task(manager.broadcast())
-        
-        return f"Engine plays: {move_san}. New FEN: {board.fen()}"
-    finally:
-        await engine.quit()
+    result = await safe_engine_play(board, chess.engine.Limit(time=1.0))
+    move_san = board.san(result.move)
+    board.push(result.move)
+    
+    # BROADCAST TO UI INSTANTLY
+    if loop:
+        asyncio.run_coroutine_threadsafe(manager.broadcast(), loop)
+    else:
+        asyncio.create_task(manager.broadcast())
+    
+    return f"Engine plays: {move_san}. New FEN: {board.fen()}"
 
 # --- Hybrid Orchestration ---
 loop = None
