@@ -48,8 +48,9 @@ print(f"[Config] Stockfish path: {STOCKFISH_PATH}")
 # --- Singleton Stockfish Engine Manager ---
 # Reuses ONE engine process instead of spawning/killing on every move
 _engine_instance = None
-_engine_lock = asyncio.Lock()  # Prevents concurrent Stockfish access
-_pending_analysis: asyncio.Task | None = None  # For debouncing
+_engine_busy = False  # Simple guard instead of asyncio.Lock (avoids event loop binding issues)
+_last_analysis_time = 0.0  # For timestamp-based debounce
+_DEBOUNCE_SECONDS = 0.8  # Minimum gap between analyses
 
 async def get_engine():
     """Returns a reusable Stockfish engine. Creates one if needed."""
@@ -67,16 +68,30 @@ async def get_engine():
     return _engine_instance
 
 async def safe_engine_analyse(board_obj, limit, **kwargs):
-    """Thread-safe engine analysis using the singleton + lock."""
-    async with _engine_lock:
+    """Engine analysis using the singleton. Skips if engine is busy."""
+    global _engine_busy
+    if _engine_busy:
+        print("[Engine] Skipping — engine is busy with another analysis")
+        return None
+    _engine_busy = True
+    try:
         engine = await get_engine()
         return await engine.analyse(board_obj, limit, **kwargs)
+    finally:
+        _engine_busy = False
 
 async def safe_engine_play(board_obj, limit):
-    """Thread-safe engine play using the singleton + lock."""
-    async with _engine_lock:
+    """Engine play using the singleton. Waits if engine is busy."""
+    global _engine_busy
+    # For play_engine_move, we must wait — it's user-initiated
+    while _engine_busy:
+        await asyncio.sleep(0.1)
+    _engine_busy = True
+    try:
         engine = await get_engine()
         return await engine.play(board_obj, limit)
+    finally:
+        _engine_busy = False
 
 # --- Global State Hub ---
 board = chess.Board()
@@ -483,23 +498,19 @@ async def game_sync(request: GameSyncRequest):
 
     print(f"[Game Sync] Move: {request.last_move} | Turn: {request.turn} | Player: {request.player_color} | FEN: {request.fen[:40]}...")
     
-    # 3. TRIGGER AUTO-ANALYSIS with DEBOUNCE
-    global _pending_analysis
+    # 3. TRIGGER AUTO-ANALYSIS with TIMESTAMP DEBOUNCE
+    import time as _time
+    global _last_analysis_time
     
-    async def debounced_analysis(fen):
-        """Wait before analyzing — if a new move arrives, this task gets cancelled."""
-        await asyncio.sleep(1.0)  # Debounce window
-        await push_auto_analysis(fen)
-    
-    # Cancel any pending analysis from a previous rapid move
-    if _pending_analysis and not _pending_analysis.done():
-        _pending_analysis.cancel()
-        print("[Debounce] Cancelled stale analysis task")
-    
-    if loop:
-        _pending_analysis = asyncio.run_coroutine_threadsafe(debounced_analysis(request.fen), loop)
+    now = _time.time()
+    if now - _last_analysis_time < _DEBOUNCE_SECONDS:
+        print(f"[Debounce] Skipping analysis (only {now - _last_analysis_time:.1f}s since last)")
     else:
-        _pending_analysis = asyncio.create_task(debounced_analysis(request.fen))
+        _last_analysis_time = now
+        if loop:
+            asyncio.run_coroutine_threadsafe(push_auto_analysis(request.fen), loop)
+        else:
+            asyncio.create_task(push_auto_analysis(request.fen))
         
     return {"status": "synced"}
 
@@ -612,295 +623,291 @@ async def push_auto_analysis(fen: str):
             print(f"[Pacing] Skipping CPU analysis for {side_who_moved} (Analyze CPU is OFF)")
             return
 
-        # Use singleton engine with lock
+        # Use singleton engine
         analysis_after = await safe_engine_analyse(current_board, chess.engine.Limit(time=0.5), multipv=1)
+        if analysis_after is None:
+            print("[Auto-Analysis] Engine busy, skipping this move")
+            return
         top_pv = analysis_after[0]
-        if True:  # Preserves original indentation block
-            # ─────────────────────────────────────────────────────────────
-            # STAGE 1: ENGINE CLASSIFICATION
-            # ─────────────────────────────────────────────────────────────
-            pass
 
-            score_after_raw = top_pv["score"].relative.score(mate_score=10000)
-            # Convert to centipawns from the perspective of the player who just moved
-            # (relative score is from the perspective of the side TO MOVE)
-            # After player moved, it's opponent's turn → relative is opponent's advantage
-            # So player_delta = -score_after_raw vs prev_score
-            score_after_player_pov = -(score_after_raw if score_after_raw is not None else 0)
+        score_after_raw = top_pv["score"].relative.score(mate_score=10000)
+        # Convert to centipawns from the perspective of the player who just moved
+        # (relative score is from the perspective of the side TO MOVE)
+        # After player moved, it's opponent's turn → relative is opponent's advantage
+        # So player_delta = -score_after_raw vs prev_score
+        score_after_player_pov = -(score_after_raw if score_after_raw is not None else 0)
 
-            prev_score = game_context.get("prev_score", 30)  # stored in centipawns
-            delta = prev_score - score_after_player_pov
-            game_context["prev_score"] = score_after_player_pov
+        prev_score = game_context.get("prev_score", 30)  # stored in centipawns
+        delta = prev_score - score_after_player_pov
+        game_context["prev_score"] = score_after_player_pov
 
-            # Detect material lost (was the move a bad capture or hanging piece eaten?)
-            material_lost = None
-            last_move_uci = game_context.get("last_move", "")
-            if last_move_uci and len(last_move_uci) >= 4:
+        # Detect material lost (was the move a bad capture or hanging piece eaten?)
+        material_lost = None
+        last_move_uci = game_context.get("last_move", "")
+        if last_move_uci and len(last_move_uci) >= 4:
+            try:
+                # Reconstruct the board BEFORE the move to detect capture context
+                pre_board = current_board.copy()
+                pre_board.push(chess.Move.from_uci(last_move_uci))
+                # That would be board after again – check if opponent best move captures back
+                if top_pv.get("pv"):
+                    resp = top_pv["pv"][0]
+                    if current_board.is_capture(resp):
+                        captured = current_board.piece_at(resp.to_square)
+                        if captured:
+                            material_lost = get_piece_name(captured.symbol())
+            except Exception:
+                pass
+
+        # Classify
+        if delta > 250 or (material_lost and delta > 100):
+            classification = "Blunder"
+            color = "#dc3545"
+            badge = "🚨"
+        elif delta > 100:
+            classification = "Mistake"
+            color = "#fd7e14"
+            badge = "❓"
+        elif delta > 30:
+            classification = "Inaccuracy"
+            color = "#ffc107"
+            badge = "⚠️"
+        elif delta < -50:
+            classification = "Great Move"
+            color = "#0dcaf0"
+            badge = "✨"
+        else:
+            classification = "Good"
+            color = "#198754"
+            badge = "✅"
+
+        game_context["last_move_quality"] = classification
+
+        # Record in history for post-game review
+        game_context["analysis_history"].append({
+            "fen": fen,
+            "move": game_context.get("last_move", "??"),
+            "cp_loss": delta,
+            "turn": side_who_moved
+        })
+
+        # Hot squares: best engine reply target
+        hot_squares = []
+        active_challenge = None
+        if top_pv.get("pv"):
+            best_move = top_pv["pv"][0]
+            hot_squares.append({"square": chess.square_name(best_move.to_square), "type": "gold"})
+            if current_board.is_capture(best_move):
+                hot_squares.append({"square": chess.square_name(best_move.to_square), "type": "red"})
+
+        game_context["hot_squares"] = hot_squares
+        game_context["active_challenge"] = active_challenge
+
+        # ─────────────────────────────────────────────────────────────
+        # PACING: Suppress routine CPU tips if a critical player tip was recent
+        # ─────────────────────────────────────────────────────────────
+        import time as _time
+        current_time = _time.time()
+        is_critical = classification in ("Blunder", "Mistake")
+        if is_critical:
+            game_context["last_critical_tip_time"] = current_time
+        if not is_player_move and not is_critical:
+            time_since_tip = current_time - game_context.get("last_critical_tip_time", 0)
+            if time_since_tip < 5.0:
+                print(f"[Pacing] Suppressing routine CPU tip ({time_since_tip:.1f}s ago)")
+                return
+
+        # ─────────────────────────────────────────────────────────────
+        # STAGE 2: COST GATE
+        # ─────────────────────────────────────────────────────────────
+        if not is_player_move:
+            # CPU moves: always use fast engine message, never LLM
+            if classification in ("Blunder", "Mistake"):
+                cpu_msg = "<strong style='color:#0dcaf0'>Engine Error!</strong> Seize the opportunity immediately."
+            elif classification == "Inaccuracy":
+                cpu_msg = "<strong style='color:#ffc107'>Sub-optimal CPU move.</strong> Can you capitalize?"
+            elif classification == "Great Move":
+                cpu_msg = "<strong style='color:#0dcaf0'>Strong engine move.</strong> Stay alert and look for counterplay."
+            else:
+                cpu_msg = "<strong style='color:#6c757d'>Solid engine response.</strong> Stay sharp."
+
+            html_msg = f"<div style='margin-bottom:6px'><strong style='color:{color}'>{badge} CPU: {classification}</strong></div>"
+            html_msg += f"<div style='color:#cbd5e1; font-size:0.95em'>{cpu_msg}</div>"
+            await manager.broadcast({"type": "coach_tip", "message": html_msg, "hot_squares": hot_squares, "challenge": None})
+            return
+
+        # Player move — gate on classification
+        if classification not in ("Mistake", "Blunder"):
+            # ── NO LLM CALL — Simple engine message ──
+            if classification == "Great Move":
+                simple_msg = "Excellent! Strong move — you've improved your position significantly. 💪"
+            elif classification == "Inaccuracy":
+                simple_msg = "Slight inaccuracy. There was a marginally stronger option, but this is playable."
+            else:  # Good
+                simple_msg = "Good move. Keep building your position with purpose."
+
+            # Best hint (no LLM)
+            best_hint = ""
+            if top_pv.get("pv"):
+                best_opp = top_pv["pv"][0]
+                opp_piece = current_board.piece_at(best_opp.from_square)
+                opp_name = get_piece_name(opp_piece.symbol()) if opp_piece else "piece"
+                best_hint = f"<div style='margin-top:6px; color:#94a3b8; font-size:0.9em'>👀 Engine may activate its <strong>{opp_name}</strong> next.</div>"
+
+            html_msg = f"<div style='margin-bottom:6px'><strong style='color:{color}'>{badge} {classification}</strong></div>"
+            html_msg += f"<div style='color:#f1f5f9; margin-bottom:4px'>{simple_msg}</div>"
+            html_msg += best_hint
+            await manager.broadcast({"type": "coach_tip", "message": html_msg, "hot_squares": hot_squares, "challenge": active_challenge})
+            return
+
+        # ─────────────────────────────────────────────────────────────
+         # ─────────────────────────────────────────────────────────────
+         # STAGE 3: LLM COACHING (Only for Mistake / Blunder)
+         # ─────────────────────────────────────────────────────────────
+        api_key = game_context.get("api_key") or os.getenv("OPENAI_API_KEY")
+
+        # While we await LLM, immediately show a holding message
+        holding_html = f"<div style='margin-bottom:6px'><strong style='color:{color}'>{badge} {classification}</strong></div>"
+        holding_html += f"<div style='color:#94a3b8; font-size:0.9em'>🤔 Analyzing your move...</div>"
+        await manager.broadcast({"type": "coach_tip", "message": holding_html, "hot_squares": hot_squares, "challenge": None})
+
+        llm_response = None
+        if api_key:
+            # ── Validate best move legality BEFORE sending to LLM ──
+            best_move_obj = None
+            best_move_san = None
+            key_issue = "positional error"
+
+            if top_pv.get("pv"):
+                candidate = top_pv["pv"][0]
+                # Verify the move is actually legal in the current position
+                if candidate in current_board.legal_moves:
+                    best_move_obj = candidate
+                    try:
+                        best_move_san = current_board.san(candidate)
+                    except Exception as e:
+                        print(f"[LLM Coach] SAN conversion failed: {e}")
+                        best_move_san = candidate.uci()  # fallback to UCI notation
+                else:
+                    print(f"[LLM Coach] WARNING: Engine move {candidate} is not legal in position {fen}. Skipping LLM call.")
+
+            if best_move_san is None:
+                # Cannot guarantee a legal move — fall through to fallback below
+                print("[LLM Coach] No legal best move available. Skipping LLM call.")
+            else:
+                if material_lost:
+                    key_issue = f"Hanging piece ({material_lost})"
+                elif is_critical:
+                    key_issue = "Tactical oversight"
+
+                # Determine side-to-move AFTER the played move (opponent's turn)
+                side_to_move_after = "White" if current_board.turn == chess.WHITE else "Black"
+                human_player_label = "White" if player_color == "white" else "Black"
+                side_label = "White" if side_who_moved == "white" else "Black"
+                played_move = game_context.get("last_move", "??")
+
+                # Determine material consequence for the payload
+                material_consequence = material_lost if material_lost else "None"
+
+                system_prompt = (
+                    "You are a chess improvement coach.\n\n"
+                    "You will receive structured factual information from a chess engine.\n"
+                    "These facts are correct and must not be questioned.\n\n"
+                    "IMPORTANT:\n"
+                    "- Always coach from the HUMAN PLAYER'S perspective.\n"
+                    "- The human player side is explicitly provided.\n"
+                    "- The side to move after the played move is explicitly provided.\n"
+                    "- The engine best move is already legal and verified.\n"
+                    "- You must use ONLY the provided best engine move.\n"
+                    "- Do NOT invent any move.\n"
+                    "- Do NOT calculate new moves.\n"
+                    "- Do NOT analyze the position independently.\n"
+                    "- Do NOT mention evaluation numbers.\n"
+                    "- Do NOT switch perspective.\n\n"
+                    "If the best engine move belongs to the opponent:\n"
+                    "Explain what threat that move creates and why the player's move allowed it.\n\n"
+                    "If the best engine move belongs to the human player:\n"
+                    "Explain why that move would have been stronger.\n\n"
+                    "Keep explanation under 60 words.\n"
+                    "Focus on one key idea only.\n"
+                    "Suggest at most one move (the provided engine move).\n\n"
+                    "End with one practical tip starting with:\n"
+                    "\"Tip: \"\n\n"
+                    "Start the response with the move classification on its own line.\n"
+                    "Output plain text only."
+                )
+
+                user_payload = (
+                    f"Human player side: {human_player_label}\n"
+                    f"Side to move after played move: {side_to_move_after}\n"
+                    f"Move classification: {classification}\n"
+                    f"Move played: {played_move}\n"
+                    f"Best engine move (legal and verified): {best_move_san}\n"
+                    f"Material consequence: {material_consequence}\n"
+                    f"Key issue detected: {key_issue}"
+                )
+
                 try:
-                    # Reconstruct the board BEFORE the move to detect capture context
-                    pre_board = current_board.copy()
-                    pre_board.push(chess.Move.from_uci(last_move_uci))
-                    # That would be board after again – check if opponent best move captures back
-                    if top_pv.get("pv"):
-                        resp = top_pv["pv"][0]
-                        if current_board.is_capture(resp):
-                            captured = current_board.piece_at(resp.to_square)
-                            if captured:
-                                material_lost = get_piece_name(captured.symbol())
+                    client = OpenAI(api_key=api_key)
+                    response = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: client.chat.completions.create(
+                            model="gpt-4o-mini",
+                            messages=[
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": user_payload}
+                            ],
+                            max_tokens=180,
+                            temperature=0.3  # Lower temp = more deterministic, less hallucination
+                        )
+                    )
+                    llm_response = response.choices[0].message.content.strip()
+                    print(f"[LLM Coach] {classification} — called gpt-4o-mini. Best move sent: {best_move_san}. Tokens: {response.usage.total_tokens}")
+                except Exception as e:
+                    print(f"[LLM Coach] Error: {e}")
+
+
+        # ── Assemble final message ──
+        html_msg = f"<div style='margin-bottom:8px'><strong style='color:{color}; font-size:1.05em'>{badge} {classification}</strong></div>"
+
+        if llm_response:
+            # Convert newlines to HTML, highlight the Tip line
+            lines = llm_response.split("\n")
+            formatted_lines = []
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith("Tip:"):
+                    formatted_lines.append(
+                        f"<div style='margin-top:10px; padding:8px 10px; background:rgba(129,140,248,0.1); "
+                        f"border-left:3px solid #818cf8; border-radius:4px; color:#a5b4fc; font-size:0.9em'>"
+                        f"💡 {line}</div>"
+                    )
+                else:
+                    formatted_lines.append(f"<div style='margin-bottom:4px; color:#f1f5f9; font-size:0.95em'>{line}</div>")
+            html_msg += "\n".join(formatted_lines)
+        else:
+            # Fallback if no API key or LLM failed
+            fallback = "This was a significant error. Review the position carefully and look for the most forcing continuation."
+            html_msg += f"<div style='color:#f1f5f9'>{fallback}</div>"
+            if top_pv.get("pv"):
+                try:
+                    best_san = current_board.san(top_pv["pv"][0])
+                    html_msg += f"<div style='margin-top:6px; color:#818cf8; font-size:0.9em'>Better: <strong>{best_san}</strong></div>"
                 except Exception:
                     pass
 
-            # Classify
-            if delta > 250 or (material_lost and delta > 100):
-                classification = "Blunder"
-                color = "#dc3545"
-                badge = "🚨"
-            elif delta > 100:
-                classification = "Mistake"
-                color = "#fd7e14"
-                badge = "❓"
-            elif delta > 30:
-                classification = "Inaccuracy"
-                color = "#ffc107"
-                badge = "⚠️"
-            elif delta < -50:
-                classification = "Great Move"
-                color = "#0dcaf0"
-                badge = "✨"
-            else:
-                classification = "Good"
-                color = "#198754"
-                badge = "✅"
+        if hot_squares:
+            html_msg += f"<div style='margin-top:8px; color:#94a3b8; font-size:0.85em'>🎯 Highlighted square shows the key opportunity.</div>"
 
-            game_context["last_move_quality"] = classification
+        await manager.broadcast({
+            "type": "coach_tip",
+            "message": html_msg,
+            "hot_squares": hot_squares,
+            "challenge": active_challenge
+        })
 
-            # Record in history for post-game review
-            game_context["analysis_history"].append({
-                "fen": fen,
-                "move": game_context.get("last_move", "??"),
-                "cp_loss": delta,
-                "turn": side_who_moved
-            })
-
-            # Hot squares: best engine reply target
-            hot_squares = []
-            active_challenge = None
-            if top_pv.get("pv"):
-                best_move = top_pv["pv"][0]
-                hot_squares.append({"square": chess.square_name(best_move.to_square), "type": "gold"})
-                if current_board.is_capture(best_move):
-                    hot_squares.append({"square": chess.square_name(best_move.to_square), "type": "red"})
-
-            game_context["hot_squares"] = hot_squares
-            game_context["active_challenge"] = active_challenge
-
-            # ─────────────────────────────────────────────────────────────
-            # PACING: Suppress routine CPU tips if a critical player tip was recent
-            # ─────────────────────────────────────────────────────────────
-            import time as _time
-            current_time = _time.time()
-            is_critical = classification in ("Blunder", "Mistake")
-            if is_critical:
-                game_context["last_critical_tip_time"] = current_time
-            if not is_player_move and not is_critical:
-                time_since_tip = current_time - game_context.get("last_critical_tip_time", 0)
-                if time_since_tip < 5.0:
-                    print(f"[Pacing] Suppressing routine CPU tip ({time_since_tip:.1f}s ago)")
-                    return
-
-            # ─────────────────────────────────────────────────────────────
-            # STAGE 2: COST GATE
-            # ─────────────────────────────────────────────────────────────
-            if not is_player_move:
-                # CPU moves: always use fast engine message, never LLM
-                if classification in ("Blunder", "Mistake"):
-                    cpu_msg = "<strong style='color:#0dcaf0'>Engine Error!</strong> Seize the opportunity immediately."
-                elif classification == "Inaccuracy":
-                    cpu_msg = "<strong style='color:#ffc107'>Sub-optimal CPU move.</strong> Can you capitalize?"
-                elif classification == "Great Move":
-                    cpu_msg = "<strong style='color:#0dcaf0'>Strong engine move.</strong> Stay alert and look for counterplay."
-                else:
-                    cpu_msg = "<strong style='color:#6c757d'>Solid engine response.</strong> Stay sharp."
-
-                html_msg = f"<div style='margin-bottom:6px'><strong style='color:{color}'>{badge} CPU: {classification}</strong></div>"
-                html_msg += f"<div style='color:#cbd5e1; font-size:0.95em'>{cpu_msg}</div>"
-                await manager.broadcast({"type": "coach_tip", "message": html_msg, "hot_squares": hot_squares, "challenge": None})
-                return
-
-            # Player move — gate on classification
-            if classification not in ("Mistake", "Blunder"):
-                # ── NO LLM CALL — Simple engine message ──
-                if classification == "Great Move":
-                    simple_msg = "Excellent! Strong move — you've improved your position significantly. 💪"
-                elif classification == "Inaccuracy":
-                    simple_msg = "Slight inaccuracy. There was a marginally stronger option, but this is playable."
-                else:  # Good
-                    simple_msg = "Good move. Keep building your position with purpose."
-
-                # Best hint (no LLM)
-                best_hint = ""
-                if top_pv.get("pv"):
-                    best_opp = top_pv["pv"][0]
-                    opp_piece = current_board.piece_at(best_opp.from_square)
-                    opp_name = get_piece_name(opp_piece.symbol()) if opp_piece else "piece"
-                    best_hint = f"<div style='margin-top:6px; color:#94a3b8; font-size:0.9em'>👀 Engine may activate its <strong>{opp_name}</strong> next.</div>"
-
-                html_msg = f"<div style='margin-bottom:6px'><strong style='color:{color}'>{badge} {classification}</strong></div>"
-                html_msg += f"<div style='color:#f1f5f9; margin-bottom:4px'>{simple_msg}</div>"
-                html_msg += best_hint
-                await manager.broadcast({"type": "coach_tip", "message": html_msg, "hot_squares": hot_squares, "challenge": active_challenge})
-                return
-
-            # ─────────────────────────────────────────────────────────────
-             # ─────────────────────────────────────────────────────────────
-             # STAGE 3: LLM COACHING (Only for Mistake / Blunder)
-             # ─────────────────────────────────────────────────────────────
-            api_key = game_context.get("api_key") or os.getenv("OPENAI_API_KEY")
-
-            # While we await LLM, immediately show a holding message
-            holding_html = f"<div style='margin-bottom:6px'><strong style='color:{color}'>{badge} {classification}</strong></div>"
-            holding_html += f"<div style='color:#94a3b8; font-size:0.9em'>🤔 Analyzing your move...</div>"
-            await manager.broadcast({"type": "coach_tip", "message": holding_html, "hot_squares": hot_squares, "challenge": None})
-
-            llm_response = None
-            if api_key:
-                # ── Validate best move legality BEFORE sending to LLM ──
-                best_move_obj = None
-                best_move_san = None
-                key_issue = "positional error"
-
-                if top_pv.get("pv"):
-                    candidate = top_pv["pv"][0]
-                    # Verify the move is actually legal in the current position
-                    if candidate in current_board.legal_moves:
-                        best_move_obj = candidate
-                        try:
-                            best_move_san = current_board.san(candidate)
-                        except Exception as e:
-                            print(f"[LLM Coach] SAN conversion failed: {e}")
-                            best_move_san = candidate.uci()  # fallback to UCI notation
-                    else:
-                        print(f"[LLM Coach] WARNING: Engine move {candidate} is not legal in position {fen}. Skipping LLM call.")
-
-                if best_move_san is None:
-                    # Cannot guarantee a legal move — fall through to fallback below
-                    print("[LLM Coach] No legal best move available. Skipping LLM call.")
-                else:
-                    if material_lost:
-                        key_issue = f"Hanging piece ({material_lost})"
-                    elif is_critical:
-                        key_issue = "Tactical oversight"
-
-                    # Determine side-to-move AFTER the played move (opponent's turn)
-                    side_to_move_after = "White" if current_board.turn == chess.WHITE else "Black"
-                    human_player_label = "White" if player_color == "white" else "Black"
-                    side_label = "White" if side_who_moved == "white" else "Black"
-                    played_move = game_context.get("last_move", "??")
-
-                    # Determine material consequence for the payload
-                    material_consequence = material_lost if material_lost else "None"
-
-                    system_prompt = (
-                        "You are a chess improvement coach.\n\n"
-                        "You will receive structured factual information from a chess engine.\n"
-                        "These facts are correct and must not be questioned.\n\n"
-                        "IMPORTANT:\n"
-                        "- Always coach from the HUMAN PLAYER'S perspective.\n"
-                        "- The human player side is explicitly provided.\n"
-                        "- The side to move after the played move is explicitly provided.\n"
-                        "- The engine best move is already legal and verified.\n"
-                        "- You must use ONLY the provided best engine move.\n"
-                        "- Do NOT invent any move.\n"
-                        "- Do NOT calculate new moves.\n"
-                        "- Do NOT analyze the position independently.\n"
-                        "- Do NOT mention evaluation numbers.\n"
-                        "- Do NOT switch perspective.\n\n"
-                        "If the best engine move belongs to the opponent:\n"
-                        "Explain what threat that move creates and why the player's move allowed it.\n\n"
-                        "If the best engine move belongs to the human player:\n"
-                        "Explain why that move would have been stronger.\n\n"
-                        "Keep explanation under 60 words.\n"
-                        "Focus on one key idea only.\n"
-                        "Suggest at most one move (the provided engine move).\n\n"
-                        "End with one practical tip starting with:\n"
-                        "\"Tip: \"\n\n"
-                        "Start the response with the move classification on its own line.\n"
-                        "Output plain text only."
-                    )
-
-                    user_payload = (
-                        f"Human player side: {human_player_label}\n"
-                        f"Side to move after played move: {side_to_move_after}\n"
-                        f"Move classification: {classification}\n"
-                        f"Move played: {played_move}\n"
-                        f"Best engine move (legal and verified): {best_move_san}\n"
-                        f"Material consequence: {material_consequence}\n"
-                        f"Key issue detected: {key_issue}"
-                    )
-
-                    try:
-                        client = OpenAI(api_key=api_key)
-                        response = await asyncio.get_event_loop().run_in_executor(
-                            None,
-                            lambda: client.chat.completions.create(
-                                model="gpt-4o-mini",
-                                messages=[
-                                    {"role": "system", "content": system_prompt},
-                                    {"role": "user", "content": user_payload}
-                                ],
-                                max_tokens=180,
-                                temperature=0.3  # Lower temp = more deterministic, less hallucination
-                            )
-                        )
-                        llm_response = response.choices[0].message.content.strip()
-                        print(f"[LLM Coach] {classification} — called gpt-4o-mini. Best move sent: {best_move_san}. Tokens: {response.usage.total_tokens}")
-                    except Exception as e:
-                        print(f"[LLM Coach] Error: {e}")
-
-
-            # ── Assemble final message ──
-            html_msg = f"<div style='margin-bottom:8px'><strong style='color:{color}; font-size:1.05em'>{badge} {classification}</strong></div>"
-
-            if llm_response:
-                # Convert newlines to HTML, highlight the Tip line
-                lines = llm_response.split("\n")
-                formatted_lines = []
-                for line in lines:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    if line.startswith("Tip:"):
-                        formatted_lines.append(
-                            f"<div style='margin-top:10px; padding:8px 10px; background:rgba(129,140,248,0.1); "
-                            f"border-left:3px solid #818cf8; border-radius:4px; color:#a5b4fc; font-size:0.9em'>"
-                            f"💡 {line}</div>"
-                        )
-                    else:
-                        formatted_lines.append(f"<div style='margin-bottom:4px; color:#f1f5f9; font-size:0.95em'>{line}</div>")
-                html_msg += "\n".join(formatted_lines)
-            else:
-                # Fallback if no API key or LLM failed
-                fallback = "This was a significant error. Review the position carefully and look for the most forcing continuation."
-                html_msg += f"<div style='color:#f1f5f9'>{fallback}</div>"
-                if top_pv.get("pv"):
-                    try:
-                        best_san = current_board.san(top_pv["pv"][0])
-                        html_msg += f"<div style='margin-top:6px; color:#818cf8; font-size:0.9em'>Better: <strong>{best_san}</strong></div>"
-                    except Exception:
-                        pass
-
-            if hot_squares:
-                html_msg += f"<div style='margin-top:8px; color:#94a3b8; font-size:0.85em'>🎯 Highlighted square shows the key opportunity.</div>"
-
-            await manager.broadcast({
-                "type": "coach_tip",
-                "message": html_msg,
-                "hot_squares": hot_squares,
-                "challenge": active_challenge
-            })
-
-    except asyncio.CancelledError:
-        print("[Debounce] Analysis task was cancelled (superseded by newer move)")
     except Exception as e:
         print(f"[Auto-Analysis Error] {e}")
 
