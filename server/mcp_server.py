@@ -185,6 +185,7 @@ async def coach_query(request: CoachQuery):
     
     # 1. Analyze with Stockfish first to provide context to the LLM
     eval_str = "Unknown"
+    position_status = ""
     best_lines = []
     tactical_truths = []
     board_text = "Unknown"
@@ -213,7 +214,6 @@ async def coach_query(request: CoachQuery):
             analysis = await engine.analyse(temp_board, chess.engine.Limit(time=1.5), multipv=2)
             await engine.quit()
             
-            position_status = ""
             if analysis:
                 top = analysis[0]
                 score = top["score"].relative.score(mate_score=10000)

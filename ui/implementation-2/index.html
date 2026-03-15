@@ -79,7 +79,7 @@
             width: 100%;
             background: linear-gradient(to top, var(--accent-primary), #818cf8);
             box-shadow: 0 0 15px rgba(99, 102, 241, 0.5);
-            transition: height 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+            /* Removed transition: height to prevent layout thrashing and board flickering */
         }
 
         .button-container {
