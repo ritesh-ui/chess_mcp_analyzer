@@ -28,7 +28,21 @@ logging.getLogger("uvicorn.error").setLevel(logging.ERROR)
 logging.getLogger("uvicorn.access").setLevel(logging.ERROR)
 
 # --- Configuration ---
-STOCKFISH_PATH = shutil.which("stockfish") or "/opt/homebrew/bin/stockfish"
+def find_stockfish():
+    paths = [
+        "stockfish", 
+        "/usr/games/stockfish",  # Default apt-get location on Debian/Ubuntu
+        "/usr/bin/stockfish", 
+        "/opt/homebrew/bin/stockfish"
+    ]
+    for p in paths:
+        if shutil.which(p):
+            return shutil.which(p)
+        if os.path.exists(p):
+            return p
+    return "stockfish"
+
+STOCKFISH_PATH = find_stockfish()
 
 # --- Global State Hub ---
 board = chess.Board()
