@@ -4,9 +4,14 @@ document.addEventListener("DOMContentLoaded", function () {
     let currentMode = 'Player vs Engine';
     let board;
     let playerColor = 'white';
+    let sessionId = localStorage.getItem('chess_session_id');
+    if (!sessionId) {
+        sessionId = self.crypto.randomUUID();
+        localStorage.setItem('chess_session_id', sessionId);
+    }
     const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
     const MCP_SERVER = isLocal ? 'http://localhost:8000' : 'https://chess-mcp-analyzer.onrender.com';
-    const WS_URL = isLocal ? 'ws://localhost:8765' : 'wss://chess-mcp-analyzer.onrender.com/ws';
+    const WS_URL = isLocal ? 'ws://localhost:8000/ws' : 'wss://chess-mcp-analyzer.onrender.com/ws';
     let coachSocket = null;
     let currentChallenge = null;
     let drillData = null;
@@ -60,7 +65,7 @@ document.addEventListener("DOMContentLoaded", function () {
 
     // --- Coach WebSocket (server -> GUI push) ---
     function connectCoachSocket() {
-        coachSocket = new WebSocket(WS_URL);
+        coachSocket = new WebSocket(WS_URL + "?sessionId=" + sessionId);
         coachSocket.onopen = () => {
             document.getElementById('coach-status').textContent = '● LIVE';
             document.getElementById('coach-status').style.color = '#198754';
@@ -131,7 +136,8 @@ document.addEventListener("DOMContentLoaded", function () {
             turn,
             player_color: playerColor,
             analyze_cpu: document.getElementById('analyze-cpu-toggle').checked,
-            api_key: localStorage.getItem('openai_api_key') || null
+            api_key: localStorage.getItem('openai_api_key') || null,
+            session_id: sessionId
         };
         fetch(`${MCP_SERVER}/game/sync`, {
             method: 'POST',
@@ -151,7 +157,6 @@ document.addEventListener("DOMContentLoaded", function () {
         let gameScoreEl = document.getElementById("game-score");
         let engineAnalysisEl = document.getElementById("engineAnalysis");
         let announced_game_over = false;
-        let playerColorOriginal = playerColor;
 
         let onDragStart = function (source, piece, position, orientation) {
             if (currentMode === 'Player vs Player') {
@@ -189,7 +194,10 @@ document.addEventListener("DOMContentLoaded", function () {
                 const response = await fetch(`${MCP_SERVER}/game/review`, { 
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ api_key: localStorage.getItem('openai_api_key') || null })
+                    body: JSON.stringify({ 
+                        api_key: localStorage.getItem('openai_api_key') || null,
+                        session_id: sessionId
+                    })
                 });
                 const data = await response.json();
 
@@ -227,7 +235,6 @@ document.addEventListener("DOMContentLoaded", function () {
         }
 
         function uciCmd(cmd, which) {
-            console.log("UCI: " + cmd);
             (which || engine).postMessage(cmd);
         }
         uciCmd('uci');
@@ -341,14 +348,7 @@ document.addEventListener("DOMContentLoaded", function () {
         };
 
         let onClick = function (source, target) {
-            if (currentChallenge && source === currentChallenge.target_square) {
-                const panel = document.getElementById('coach-messages');
-                panel.innerHTML = `<div class="alert alert-success mt-2">✨ <strong>Perfect!</strong> You found the critical piece.</div>` + panel.innerHTML;
-                removeHighlights();
-                currentChallenge = null;
-            }
             onClickPiece(source, target);
-            prepareMove();
         };
 
         let onDrop = function (source, target) {
@@ -444,20 +444,20 @@ document.addEventListener("DOMContentLoaded", function () {
     adjustScoreBarHeight();
     window.addEventListener('resize', adjustScoreBarHeight);
 
-    document.getElementById("newGameBtn").addEventListener("click", () => {
+    const handleGameReset = () => {
         gameInstance.stop();
         gameInstance.reset();
         gameInstance.start();
         clearAIChat();
-        fetch(`${MCP_SERVER}/reset`, { method: 'POST' }).catch(e => console.error("Backend reset failed:", e));
-    });
-    document.getElementById("resetGameBtn").addEventListener("click", () => {
-        gameInstance.stop();
-        gameInstance.reset();
-        gameInstance.start();
-        clearAIChat();
-        fetch(`${MCP_SERVER}/reset`, { method: 'POST' }).catch(e => console.error("Backend reset failed:", e));
-    });
+        fetch(`${MCP_SERVER}/reset`, { 
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: sessionId })
+        }).catch(e => console.error("Backend reset failed:", e));
+    };
+
+    document.getElementById("newGameBtn").addEventListener("click", handleGameReset);
+    document.getElementById("resetGameBtn").addEventListener("click", handleGameReset);
 
     function clearAIChat() {
         document.getElementById("coach-messages").innerHTML = `
@@ -505,7 +505,8 @@ document.addEventListener("DOMContentLoaded", function () {
                     pgn: game.pgn(), 
                     question: question, 
                     player_color: playerColor,
-                    api_key: localStorage.getItem('openai_api_key') || null
+                    api_key: localStorage.getItem('openai_api_key') || null,
+                    session_id: sessionId
                 })
             });
             const data = await response.json();
@@ -530,7 +531,8 @@ document.addEventListener("DOMContentLoaded", function () {
                     turn: game.turn() === 'w' ? 'white' : 'black',
                     player_color: playerColor,
                     analyze_cpu: document.getElementById('analyze-cpu-toggle').checked,
-                    api_key: localStorage.getItem('openai_api_key') || null
+                    api_key: localStorage.getItem('openai_api_key') || null,
+                    session_id: sessionId
                 })
             }).catch(e => { console.error("Failed to sync CPU analysis toggle:", e); });
 

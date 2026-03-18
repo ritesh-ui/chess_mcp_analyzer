@@ -93,74 +93,107 @@ async def safe_engine_play(board_obj, limit):
     finally:
         _engine_busy = False
 
-# --- Global State Hub ---
-board = chess.Board()
+# --- Session Management ---
+class SessionState:
+    def __init__(self):
+        self.board = chess.Board()
+        # Game context populated by the GUI after every move
+        self.game_context = {
+            "fen": chess.STARTING_FEN,
+            "pgn": "",
+            "last_move": None,
+            "turn": "white",
+            "updated_at": None,
+            "prev_score": 0.3, # Average white advantage at start
+            "hot_squares": [], # List of {square: 'a1', type: 'gold'|'red'}
+            "active_challenge": None, # {target_square: 'e4', message: '...'}
+            "analysis_history": [], # List of {fen: str, move: str, cp_loss: float, turn: str}
+            "last_critical_tip_time": 0, # Timestamp of last blunder/mistake alert
+            "last_move_quality": "Good", # Track quality of the very last move
+            "analyze_cpu": False # DEFAULT: DISABLED
+        }
 
-# Game context populated by the GUI after every move
-game_context = {
-    "fen": chess.STARTING_FEN,
-    "pgn": "",
-    "last_move": None,
-    "turn": "white",
-    "updated_at": None,
-    "prev_score": 0.3, # Average white advantage at start
-    "hot_squares": [], # List of {square: 'a1', type: 'gold'|'red'}
-    "active_challenge": None, # {target_square: 'e4', message: '...'}
-    "analysis_history": [], # List of {fen: str, move: str, cp_loss: float, turn: str}
-    "last_critical_tip_time": 0, # Timestamp of last blunder/mistake alert
-    "last_move_quality": "Good", # Track quality of the very last move
-    "analyze_cpu": False # DEFAULT: DISABLED
-}
+class SessionManager:
+    def __init__(self):
+        self.sessions: dict[str, SessionState] = {}
+
+    def get_session(self, session_id: str) -> SessionState:
+        if not session_id:
+            session_id = "default"
+        if session_id not in self.sessions:
+            print(f"[Session] Creating new session: {session_id}")
+            self.sessions[session_id] = SessionState()
+        return self.sessions[session_id]
+
+    def reset_session(self, session_id: str):
+        if not session_id:
+            session_id = "default"
+        print(f"[Session] Resetting session: {session_id}")
+        self.sessions[session_id] = SessionState()
+
+session_manager = SessionManager()
 
 # --- Connection Manager ---
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: List[WebSocket] = []
+        # session_id -> list of WebSockets
+        self.active_connections: dict[str, List[WebSocket]] = {}
 
-    async def connect(self, websocket: WebSocket) -> bool:
+    async def connect(self, websocket: WebSocket, session_id: str) -> bool:
         try:
             await websocket.accept()
-            self.active_connections.append(websocket)
-            print(f"[Hub] New connection: {id(websocket)}. Total: {len(self.active_connections)}")
+            if not session_id:
+                session_id = "default"
+            if session_id not in self.active_connections:
+                self.active_connections[session_id] = []
+            self.active_connections[session_id].append(websocket)
+            print(f"[Hub] New connection for session {session_id}. Total for session: {len(self.active_connections[session_id])}")
             # Send immediate greeting and state
             await self.send_personal_message({"type": "coach_tip", "message": "Connection Established! AI Coach is ready."}, websocket)
-            await self.send_personal_message(self.get_current_state(), websocket)
+            await self.send_personal_message(self.get_current_state(session_id), websocket)
             return True
         except Exception as e:
             print(f"[Hub] Connection error: {e}")
             return False
 
-    def disconnect(self, websocket: WebSocket):
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
+    def disconnect(self, websocket: WebSocket, session_id: str):
+        if not session_id:
+            session_id = "default"
+        if session_id in self.active_connections and websocket in self.active_connections[session_id]:
+            self.active_connections[session_id].remove(websocket)
+            if not self.active_connections[session_id]:
+                del self.active_connections[session_id]
 
-    def get_current_state(self):
+    def get_current_state(self, session_id: str):
+        state = session_manager.get_session(session_id)
         return {
             "type": "state_update",
-            "fen": board.fen(),
-            "turn": "white" if board.turn == chess.WHITE else "black",
-            "is_game_over": board.is_game_over()
+            "fen": state.board.fen(),
+            "turn": "white" if state.board.turn == chess.WHITE else "black",
+            "is_game_over": state.board.is_game_over()
         }
 
     async def send_personal_message(self, message: dict, websocket: WebSocket):
         await websocket.send_text(json.dumps(message))
 
-    async def broadcast(self, message: dict = None):
+    async def broadcast(self, session_id: str, message: dict = None):
+        if not session_id:
+            session_id = "default"
         if message is None:
-            message = self.get_current_state()
+            message = self.get_current_state(session_id)
         
         # Log for debugging
-        print(f"[Hub Broadcast] Type: {message.get('type')} | Content: {str(message)[:100]}...")
-        print(f"[Hub Broadcast] Active connections: {len(self.active_connections)}")
+        print(f"[Hub Broadcast] Session: {session_id} | Type: {message.get('type')} | Content: {str(message)[:100]}...")
         
-        for connection in self.active_connections:
-            try:
-                await connection.send_text(json.dumps(message))
-                print(f"[Hub Broadcast] Sent to connection: {id(connection)}")
-            except Exception as e:
-                print(f"[Hub Broadcast] Error sending to {id(connection)}: {e}")
-                # Connection might be stale, but we let disconnect handler handle it
-                pass
+        if session_id in self.active_connections:
+            print(f"[Hub Broadcast] Active connections for session {session_id}: {len(self.active_connections[session_id])}")
+            for connection in self.active_connections[session_id]:
+                try:
+                    await connection.send_text(json.dumps(message))
+                    print(f"[Hub Broadcast] Sent to connection: {id(connection)}")
+                except Exception as e:
+                    print(f"[Hub Broadcast] Error sending to connection: {e}")
+                    pass
 
 manager = ConnectionManager()
 app = FastAPI(title="Chess WebSocket Hub")
@@ -175,19 +208,20 @@ app.add_middleware(
 )
 
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    if await manager.connect(websocket):
+async def websocket_endpoint(websocket: WebSocket, sessionId: str = "default"):
+    if await manager.connect(websocket, sessionId):
         try:
             while True:
                 # We mostly use WS for server -> client push
                 # But we can listen for pings/heartbeats if needed
                 await websocket.receive_text()
         except WebSocketDisconnect:
-            manager.disconnect(websocket)
+            manager.disconnect(websocket, sessionId)
 
 # --- HTTP Models ---
 class MoveRequest(BaseModel):
     move: str
+    session_id: str = "default"
 
 class GameSyncRequest(BaseModel):
     fen: str
@@ -197,6 +231,7 @@ class GameSyncRequest(BaseModel):
     player_color: str = "white"
     analyze_cpu: bool = False
     api_key: str | None = None
+    session_id: str = "default"
 
 class CoachQuery(BaseModel):
     fen: str
@@ -204,32 +239,35 @@ class CoachQuery(BaseModel):
     question: str
     player_color: str = "white"
     api_key: str | None = None
+    session_id: str = "default"
 
 class ReviewRequest(BaseModel):
     api_key: str | None = None
+    session_id: str = "default"
 
 # --- HTTP Endpoints for React UI ---
 @app.get("/status")
-async def get_status():
-    return manager.get_current_state()
+async def get_status(sessionId: str = "default"):
+    return manager.get_current_state(sessionId)
 
 @app.post("/move")
 async def make_move(request: MoveRequest):
     try:
+        session = session_manager.get_session(request.session_id)
         move = None
         try:
-            move = board.parse_uci(request.move)
+            move = session.board.parse_uci(request.move)
         except ValueError:
-            move = board.parse_san(request.move)
+            move = session.board.parse_san(request.move)
             
-        if move in board.legal_moves:
-            board.push(move)
+        if move in session.board.legal_moves:
+            session.board.push(move)
             # BRROADCAST CHANGE
             if loop:
-                asyncio.run_coroutine_threadsafe(manager.broadcast(), loop)
+                asyncio.run_coroutine_threadsafe(manager.broadcast(request.session_id), loop)
             else:
-                asyncio.create_task(manager.broadcast())
-            return {"status": "success", "fen": board.fen()}
+                asyncio.create_task(manager.broadcast(request.session_id))
+            return {"status": "success", "fen": session.board.fen()}
         else:
             raise HTTPException(status_code=400, detail="Illegal move")
     except Exception as e:
@@ -240,9 +278,12 @@ async def coach_query(request: CoachQuery):
     """
     Handles interactive questions from the user via the LLM.
     """
-    api_key = request.api_key or os.getenv("OPENAI_API_KEY")
+    session = session_manager.get_session(request.session_id)
+    # STRICT ISOLATION: 1. Request Body, 2. Session Context (NO GLOBAL FALLBACK)
+    api_key = request.api_key or session.game_context.get("api_key")
+    
     if not api_key:
-        return {"response": "I'd love to chat more deeply, but my AI brain (OpenAI API Key) isn't plugged in right now! Please set the OPENAI_API_KEY environment variable to enable full interactive coaching."}
+        return {"response": "I'd love to chat more deeply, but my AI brain (OpenAI API Key) isn't plugged in right now! Please provide an API key in the settings to enable interactive coaching for this session."}
 
     client = OpenAI(api_key=api_key)
     
@@ -259,13 +300,11 @@ async def coach_query(request: CoachQuery):
             temp_board = chess.Board(request.fen)
             
             # --- Translate FEN into absolute piece locations ---
-            piece_names = {'P': 'Pawn', 'N': 'Knight', 'B': 'Bishop', 'R': 'Rook', 'Q': 'Queen', 'K': 'King',
-                           'p': 'Pawn', 'n': 'Knight', 'b': 'Bishop', 'r': 'Rook', 'q': 'Queen', 'k': 'King'}
             white_pieces = []
             black_pieces = []
             for sq, piece in temp_board.piece_map().items():
                 sq_name = chess.square_name(sq)
-                p_name = piece_names.get(piece.symbol(), "Piece")
+                p_name = get_piece_name(piece.symbol())
                 if piece.color == chess.WHITE:
                     white_pieces.append(f"{p_name} at {sq_name}")
                 else:
@@ -368,17 +407,18 @@ async def coach_query(request: CoachQuery):
         return {"response": f"Sorry, I encountered an error while thinking: {str(e)}"}
 
 @app.post("/game/review")
-async def game_review(request: ReviewRequest = None):
+async def game_review(request: ReviewRequest):
     """
     Summarizes the game and identifies the biggest blunder for the 'Memory Session'.
     """
-    history = game_context.get("analysis_history", [])
+    session = session_manager.get_session(request.session_id)
+    history = session.game_context.get("analysis_history", [])
     if not history:
         return {"lessons": ["No moves recorded for review."], "blunder": None}
 
     # 1. Identify Biggest Blunder
-    # Filter for player moves (assuming we're coaching the player_color)
-    player_color = game_context.get("player_color", "white")
+    # Filter for player moves
+    player_color = session.game_context.get("player_color", "white")
     player_history = [h for h in history if h["turn"] == player_color]
     
     biggest_blunder = None
@@ -390,7 +430,8 @@ async def game_review(request: ReviewRequest = None):
             biggest_blunder = sorted_history[0]
 
     # 2. Generate Lessons using LLM
-    api_key = (request.api_key if request else None) or os.getenv("OPENAI_API_KEY")
+    # STRICT ISOLATION: 1. Request Body, 2. Session Context (NO GLOBAL FALLBACK)
+    api_key = request.api_key or session.game_context.get("api_key")
     summary = "The game was complex. Focus on center control and piece activity."
     
     if api_key:
@@ -434,19 +475,13 @@ async def game_review(request: ReviewRequest = None):
         "blunder": drill_data
     }
 
+class ResetRequest(BaseModel):
+    session_id: str = "default"
+
 @app.post("/reset")
-async def reset_board():
-    global board
-    board.reset()
-    # Reset internal coaching memory
-    game_context["prev_score"] = 0.3
-    game_context["pgn"] = ""
-    game_context["last_move"] = None
-    game_context["analysis_history"] = []
-    game_context["active_challenge"] = None
-    game_context["hot_squares"] = []
-    game_context["last_move_quality"] = "Good"
-    game_context["last_critical_tip_time"] = 0
+async def reset_board(request: ResetRequest):
+    session_manager.reset_session(request.session_id)
+    session = session_manager.get_session(request.session_id)
     
     # BROADCAST CHANGE to clear highlights on frontend
     payload = {
@@ -456,47 +491,38 @@ async def reset_board():
         "challenge": None
     }
     if loop:
-        asyncio.run_coroutine_threadsafe(manager.broadcast(payload), loop)
+        asyncio.run_coroutine_threadsafe(manager.broadcast(request.session_id, payload), loop)
     else:
-        asyncio.create_task(manager.broadcast(payload))
+        asyncio.create_task(manager.broadcast(request.session_id, payload))
     
-    print("[System] Full backend reset completed.")
-    return {"status": "reset", "fen": board.fen()}
+    print(f"[System] Backend reset completed for session {request.session_id}.")
+    return {"status": "reset", "fen": session.board.fen()}
 
 @app.post("/game/sync")
 async def game_sync(request: GameSyncRequest):
     """Called by the GUI after every move. Keeps server in sync with GUI game state."""
     import datetime
-    global board
+    session = session_manager.get_session(request.session_id)
     
     # 1. Update context for Claude
-    game_context["fen"] = request.fen
-    game_context["pgn"] = request.pgn
-    game_context["last_move"] = request.last_move
-    game_context["turn"] = request.turn
-    game_context["player_color"] = request.player_color
-    game_context["analyze_cpu"] = request.analyze_cpu
-    game_context["api_key"] = request.api_key
-    game_context["updated_at"] = datetime.datetime.now(datetime.UTC).isoformat()
+    session.game_context["fen"] = request.fen
+    session.game_context["pgn"] = request.pgn
+    session.game_context["last_move"] = request.last_move
+    session.game_context["turn"] = request.turn
+    session.game_context["player_color"] = request.player_color
+    session.game_context["analyze_cpu"] = request.analyze_cpu
+    session.game_context["api_key"] = request.api_key
+    session.game_context["updated_at"] = datetime.datetime.now(datetime.UTC).isoformat()
     
-    # 2. SYNC GLOBAL BOARD (Fix for Stockfish tools)
+    # 2. SYNC SESSION BOARD
     try:
-        board = chess.Board(request.fen)
+        session.board = chess.Board(request.fen)
     except Exception as e:
-        print(f"[Error] Failed to sync board: {e}")
+        print(f"[Error] Failed to sync board for session {request.session_id}: {e}")
 
     # Use san move for better logging if available
     move_display = request.last_move
-    if request.last_move and len(request.last_move) >= 4:
-        try:
-            # We need the previous board to get the SAN
-            # But the request.fen is already the NEW board.
-            # So we just log the raw move for now, or trust the frontend sent SAN?
-            # Actually, request.last_move in index.js is 'from + to' (UCI).
-            pass
-        except: pass
-
-    print(f"[Game Sync] Move: {request.last_move} | Turn: {request.turn} | Player: {request.player_color} | FEN: {request.fen[:40]}...")
+    print(f"[Game Sync] Session: {request.session_id} | Move: {request.last_move} | Turn: {request.turn} | Player: {request.player_color} | FEN: {request.fen[:40]}...")
     
     # 3. TRIGGER AUTO-ANALYSIS with TIMESTAMP DEBOUNCE
     import time as _time
@@ -508,9 +534,9 @@ async def game_sync(request: GameSyncRequest):
     else:
         _last_analysis_time = now
         if loop:
-            asyncio.run_coroutine_threadsafe(push_auto_analysis(request.fen), loop)
+            asyncio.run_coroutine_threadsafe(push_auto_analysis(request.fen, request.session_id), loop)
         else:
-            asyncio.create_task(push_auto_analysis(request.fen))
+            asyncio.create_task(push_auto_analysis(request.fen, request.session_id))
         
     return {"status": "synced"}
 
@@ -526,100 +552,26 @@ PIECE_NAMES = {
 def get_piece_name(symbol: str) -> str:
     return PIECE_NAMES.get(symbol.upper(), symbol)
 
-def get_friendly_quality_message(quality: str, is_player: bool, eval_val: float) -> str:
-    import random
-    
-    if is_player:
-        if "Blunder" in quality:
-            return random.choice([
-                "Critical error. You've dropped significant ground.",
-                "Major oversight. The position is now heavily compromised.",
-                "Blunder detected. You've given away a huge advantage."
-            ])
-        elif "Mistake" in quality:
-            return random.choice([
-                "Sub-optimal move. You had a stronger continuation.",
-                "A clear error that makes defense much harder.",
-                "Mistake. This gives the opponent a clear opening."
-            ])
-        elif "Inaccuracy" in quality:
-            return random.choice([
-                "Slight inaccuracy. There were better squares available.",
-                "Not the best. You're drifting from the optimal line.",
-                "Subtle slip-up. Keep an eye on the initiative."
-            ])
-        elif "Great" in quality:
-            return random.choice([
-                "Excellent! A precise and powerful continuation.",
-                "Brilliant find. You've secured a strong advantage.",
-                "Master-level precision. Exactly what the board needed."
-            ])
-        elif "Good" in quality:
-            if eval_val > 5: return "Dominating position. Stay clinical."
-            return random.choice([
-                "Solid choice. Maintaining the pressure.",
-                "Consistent play. Keeping the position stable.",
-                "Fine development. Proceed with your plan."
-            ])
-    else:
-        # Engine just moved
-        if "Blunder" in quality or "Mistake" in quality:
-            return "Engine error! Seize the opportunity immediately."
-        elif "Inaccuracy" in quality:
-            return "Sub-optimal engine move. Can you capitalize?"
-        else:
-            return "Solid engine response. Stay sharp."
-            
-    return "Game evolving. Watch the center."
 
-def get_conceptual_hint(board: chess.Board, move: chess.Move) -> str:
-    piece = board.piece_at(move.from_square)
-    if not piece: return "Look for tactical improvements."
-    
-    p_name = get_piece_name(piece.symbol())
-    is_capture = board.is_capture(move)
-    is_check = board.is_check()
-    
-    file_idx = chess.square_file(move.to_square)
-    region = "center"
-    if file_idx < 3: region = "Queenside"
-    elif file_idx > 4: region = "Kingside"
-    
-    if is_capture: return "Tactical Opportunity: Capture available."
-    
-    if piece.piece_type == chess.PAWN:
-        if region == "center": return "Goal: Contest the center with pawns."
-        return f"Structure: Improve {region} pawn chain."
-        
-    if piece.piece_type in [chess.KNIGHT, chess.BISHOP]:
-        return f"Activation: Move {p_name} to {region}."
-        
-    if piece.piece_type == chess.ROOK:
-        return "Activation: Place Rook on open file."
-        
-    if piece.piece_type == chess.QUEEN:
-        return "Dominance: Centralize the Queen."
-
-    return f"Positioning: Improve {p_name} placement."
-
-async def push_auto_analysis(fen: str):
+async def push_auto_analysis(fen: str, session_id: str = 'default'):
     """
     Cost-Optimized Analysis Pipeline:
     Stage 1: Engine classifies the move using eval delta and material loss.
     Stage 2: Cost Gate — only Mistake/Blunder triggers an LLM call.
     Stage 3: Focused LLM prompt (<90 words) for genuine coaching on errors.
     """
+    session = session_manager.get_session(session_id)
     if not os.path.exists(STOCKFISH_PATH) and not shutil.which("stockfish"):
         return
 
     try:
         current_board = chess.Board(fen)
-        player_color = game_context.get("player_color", "white")
+        player_color = session.game_context.get("player_color", "white")
         side_who_moved = "white" if current_board.turn == chess.BLACK else "black"
         is_player_move = (side_who_moved == player_color)
 
         # --- CPU Analysis Control ---
-        if not is_player_move and not game_context.get("analyze_cpu", False):
+        if not is_player_move and not session.game_context.get("analyze_cpu", False):
             print(f"[Pacing] Skipping CPU analysis for {side_who_moved} (Analyze CPU is OFF)")
             return
 
@@ -637,13 +589,13 @@ async def push_auto_analysis(fen: str):
         # So player_delta = -score_after_raw vs prev_score
         score_after_player_pov = -(score_after_raw if score_after_raw is not None else 0)
 
-        prev_score = game_context.get("prev_score", 30)  # stored in centipawns
+        prev_score = session.game_context.get("prev_score", 30)  # stored in centipawns
         delta = prev_score - score_after_player_pov
-        game_context["prev_score"] = score_after_player_pov
+        session.game_context["prev_score"] = score_after_player_pov
 
         # Detect material lost (was the move a bad capture or hanging piece eaten?)
         material_lost = None
-        last_move_uci = game_context.get("last_move", "")
+        last_move_uci = session.game_context.get("last_move", "")
         if last_move_uci and len(last_move_uci) >= 4:
             try:
                 # Reconstruct the board BEFORE the move to detect capture context
@@ -681,12 +633,12 @@ async def push_auto_analysis(fen: str):
             color = "#198754"
             badge = "✅"
 
-        game_context["last_move_quality"] = classification
+        session.game_context["last_move_quality"] = classification
 
         # Record in history for post-game review
-        game_context["analysis_history"].append({
+        session.game_context["analysis_history"].append({
             "fen": fen,
-            "move": game_context.get("last_move", "??"),
+            "move": session.game_context.get("last_move", "??"),
             "cp_loss": delta,
             "turn": side_who_moved
         })
@@ -700,8 +652,8 @@ async def push_auto_analysis(fen: str):
             if current_board.is_capture(best_move):
                 hot_squares.append({"square": chess.square_name(best_move.to_square), "type": "red"})
 
-        game_context["hot_squares"] = hot_squares
-        game_context["active_challenge"] = active_challenge
+        session.game_context["hot_squares"] = hot_squares
+        session.game_context["active_challenge"] = active_challenge
 
         # ─────────────────────────────────────────────────────────────
         # PACING: Suppress routine CPU tips if a critical player tip was recent
@@ -710,9 +662,9 @@ async def push_auto_analysis(fen: str):
         current_time = _time.time()
         is_critical = classification in ("Blunder", "Mistake")
         if is_critical:
-            game_context["last_critical_tip_time"] = current_time
+            session.game_context["last_critical_tip_time"] = current_time
         if not is_player_move and not is_critical:
-            time_since_tip = current_time - game_context.get("last_critical_tip_time", 0)
+            time_since_tip = current_time - session.game_context.get("last_critical_tip_time", 0)
             if time_since_tip < 5.0:
                 print(f"[Pacing] Suppressing routine CPU tip ({time_since_tip:.1f}s ago)")
                 return
@@ -733,7 +685,7 @@ async def push_auto_analysis(fen: str):
 
             html_msg = f"<div style='margin-bottom:6px'><strong style='color:{color}'>{badge} CPU: {classification}</strong></div>"
             html_msg += f"<div style='color:#cbd5e1; font-size:0.95em'>{cpu_msg}</div>"
-            await manager.broadcast({"type": "coach_tip", "message": html_msg, "hot_squares": hot_squares, "challenge": None})
+            await manager.broadcast(session_id, {"type": "coach_tip", "message": html_msg, "hot_squares": hot_squares, "challenge": None})
             return
 
         # Player move — gate on classification
@@ -757,19 +709,16 @@ async def push_auto_analysis(fen: str):
             html_msg = f"<div style='margin-bottom:6px'><strong style='color:{color}'>{badge} {classification}</strong></div>"
             html_msg += f"<div style='color:#f1f5f9; margin-bottom:4px'>{simple_msg}</div>"
             html_msg += best_hint
-            await manager.broadcast({"type": "coach_tip", "message": html_msg, "hot_squares": hot_squares, "challenge": active_challenge})
+            await manager.broadcast(session_id, {"type": "coach_tip", "message": html_msg, "hot_squares": hot_squares, "challenge": active_challenge})
             return
 
-        # ─────────────────────────────────────────────────────────────
-         # ─────────────────────────────────────────────────────────────
-         # STAGE 3: LLM COACHING (Only for Mistake / Blunder)
-         # ─────────────────────────────────────────────────────────────
-        api_key = game_context.get("api_key") or os.getenv("OPENAI_API_KEY")
+        # STRICT ISOLATION: Session Context ONLY (NO GLOBAL FALLBACK)
+        api_key = session.game_context.get("api_key")
 
         # While we await LLM, immediately show a holding message
         holding_html = f"<div style='margin-bottom:6px'><strong style='color:{color}'>{badge} {classification}</strong></div>"
         holding_html += f"<div style='color:#94a3b8; font-size:0.9em'>🤔 Analyzing your move...</div>"
-        await manager.broadcast({"type": "coach_tip", "message": holding_html, "hot_squares": hot_squares, "challenge": None})
+        await manager.broadcast(session_id, {"type": "coach_tip", "message": holding_html, "hot_squares": hot_squares, "challenge": None})
 
         llm_response = None
         if api_key:
@@ -804,7 +753,7 @@ async def push_auto_analysis(fen: str):
                 side_to_move_after = "White" if current_board.turn == chess.WHITE else "Black"
                 human_player_label = "White" if player_color == "white" else "Black"
                 side_label = "White" if side_who_moved == "white" else "Black"
-                played_move = game_context.get("last_move", "??")
+                played_move = session.game_context.get("last_move", "??")
 
                 # Determine material consequence for the payload
                 material_consequence = material_lost if material_lost else "None"
@@ -901,7 +850,7 @@ async def push_auto_analysis(fen: str):
         if hot_squares:
             html_msg += f"<div style='margin-top:8px; color:#94a3b8; font-size:0.85em'>🎯 Highlighted square shows the key opportunity.</div>"
 
-        await manager.broadcast({
+        await manager.broadcast(session_id, {
             "type": "coach_tip",
             "message": html_msg,
             "hot_squares": hot_squares,
@@ -912,79 +861,83 @@ async def push_auto_analysis(fen: str):
         print(f"[Auto-Analysis Error] {e}")
 
 
-@app.get("/game/status")
-async def get_game_status():
-    """Returns the current game context."""
-    return game_context
+@app.get("/game/status/{session_id}")
+async def get_game_status(session_id: str = "default"):
+    """Returns the current game context for a specific session."""
+    session = session_manager.get_session(session_id)
+    return session.game_context
 
 # --- MCP Tools for Claude ---
 @mcp.tool()
-async def get_board_analysis() -> str:
-    """Evaluates the current board state and explains why the last move was good or bad."""
+async def get_board_analysis(session_id: str = 'default') -> str:
+    session = session_manager.get_session(session_id)
+    """Evaluates the current session.board state and explains why the last move was good or bad."""
     if not os.path.exists(STOCKFISH_PATH) and not shutil.which("stockfish"):
         return "Error: Stockfish not found."
     
     try:
-        analysis = await safe_engine_analyse(board, chess.engine.Limit(time=0.5))
+        analysis = await safe_engine_analyse(session.board, chess.engine.Limit(time=0.5))
         score = analysis["score"].relative.score(mate_score=10000)
         feedback = "Position is balanced."
         if score > 150: feedback = "White has a significant advantage."
         elif score > 50: feedback = "White is slightly better."
         elif score < -150: feedback = "Black has a significant advantage."
         elif score < -50: feedback = "Black is slightly better."
-        return f"FEN: {board.fen()}\nEvaluation: {score/100.0}\nAnalysis: {feedback}"
+        return f"FEN: {session.board.fen()}\nEvaluation: {score/100.0}\nAnalysis: {feedback}"
     except Exception as e:
         return f"Error during analysis: {e}"
 
 @mcp.tool()
-async def get_game_context() -> str:
+async def get_game_context(session_id: str = 'default') -> str:
+    session = session_manager.get_session(session_id)
     """Returns the current chess game state: FEN, PGN, last move, and whose turn it is."""
-    if not game_context["pgn"] and game_context["fen"] == chess.STARTING_FEN:
+    if not session.game_context["pgn"] and session.game_context["fen"] == chess.STARTING_FEN:
         return "No game in progress. The board is at the starting position."
     return (
-        f"Current FEN: {game_context['fen']}\n"
-        f"PGN so far: {game_context['pgn']}\n"
-        f"Last Move: {game_context['last_move']}\n"
-        f"Turn: {game_context['turn']}\n"
-        f"Updated at: {game_context['updated_at']}"
+        f"Current FEN: {session.game_context['fen']}\n"
+        f"PGN so far: {session.game_context['pgn']}\n"
+        f"Last Move: {session.game_context['last_move']}\n"
+        f"Turn: {session.game_context['turn']}\n"
+        f"Updated at: {session.game_context['updated_at']}"
     )
 
 @mcp.tool()
-async def push_coaching_tip(message: str) -> str:
+async def push_coaching_tip(message: str, session_id: str = 'default') -> str:
     """Pushes a coaching tip or analysis message to the Chess AI Coach GUI in real-time via WebSocket."""
     if loop is None:
         return "Error: WebSocket Hub event loop is not initialized yet."
     
     payload = {"type": "coach_tip", "message": message}
     try:
-        asyncio.run_coroutine_threadsafe(manager.broadcast(payload), loop)
+        asyncio.run_coroutine_threadsafe(manager.broadcast(session_id, payload), loop)
         return f"Coaching tip sent to GUI: {message[:80]}..."
     except Exception as e:
         return f"Error broadcasting tip: {e}"
 
 @mcp.tool()
-async def play_engine_move() -> str:
-    """Finds the best move for the current turn, updates the board, and returns the move."""
-    if board.is_game_over():
+async def play_engine_move(session_id: str = 'default') -> str:
+    session = session_manager.get_session(session_id)
+    """Finds the best move for the current turn, updates the session.board, and returns the move."""
+    if session.board.is_game_over():
         return "Game is already over."
         
     # PACING: Wait if the player just blundered so they can read the tip
-    last_quality = game_context.get("last_move_quality", "Good")
+    last_quality = session.game_context.get("last_move_quality", "Good")
     if "Blunder" in last_quality or "Mistake" in last_quality:
         print(f"[Pacing] Delaying engine response for user reflection (Quality: {last_quality})")
         await asyncio.sleep(2.0)
 
-    result = await safe_engine_play(board, chess.engine.Limit(time=1.0))
-    move_san = board.san(result.move)
-    board.push(result.move)
+    result = await safe_engine_play(session.board, chess.engine.Limit(time=1.0))
+    move_san = session.board.san(result.move)
+    session.board.push(result.move)
     
     # BROADCAST TO UI INSTANTLY
     if loop:
-        asyncio.run_coroutine_threadsafe(manager.broadcast(), loop)
+        asyncio.run_coroutine_threadsafe(manager.broadcast(session_id), loop)
     else:
-        asyncio.create_task(manager.broadcast())
+        asyncio.create_task(manager.broadcast(session_id))
     
-    return f"Engine plays: {move_san}. New FEN: {board.fen()}"
+    return f"Engine plays: {move_san}. New FEN: {session.board.fen()}"
 
 # --- Hybrid Orchestration ---
 loop = None
